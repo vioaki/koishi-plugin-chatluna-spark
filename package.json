@@ -1,0 +1,63 @@
+{
+  "name": "koishi-plugin-chatluna-spark",
+  "description": "为 ChatLuna 添加主动对话能力的 Koishi 插件，支持定时提醒、节日问候、主动聊天等功能",
+  "version": "0.4.0",
+  "main": "lib/index.js",
+  "typings": "lib/index.d.ts",
+  "files": [
+    "lib",
+    "README.md"
+  ],
+  "license": "MIT",
+  "author": "vioaki",
+  "keywords": [
+    "koishi",
+    "koishi-plugin",
+    "chatluna",
+    "ai",
+    "chatbot",
+    "reminder",
+    "proactive",
+    "scheduled"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vioaki/koishi-plugin-chatluna-spark.git"
+  },
+  "homepage": "https://github.com/vioaki/koishi-plugin-chatluna-spark#readme",
+  "bugs": {
+    "url": "https://github.com/vioaki/koishi-plugin-chatluna-spark/issues"
+  },
+  "koishi": {
+    "description": {
+      "zh": "为 ChatLuna 添加主动对话能力，支持定时提醒、节日问候、主动聊天等功能"
+    },
+    "service": {
+      "required": ["database", "chatluna"],
+      "optional": ["chatluna_character"]
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "dependencies": {
+    "cron": "^3.1.7"
+  },
+  "peerDependencies": {
+    "koishi": "^4.17.0",
+    "koishi-plugin-chatluna": "^1.3.9",
+    "koishi-plugin-chatluna-character": "^0.0.186"
+  },
+  "peerDependenciesMeta": {
+    "koishi-plugin-chatluna-character": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "koishi": "^4.17.0",
+    "koishi-plugin-chatluna": "latest",
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
