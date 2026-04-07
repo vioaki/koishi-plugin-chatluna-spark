@@ -1,3 +1,5 @@
+# 在最新版本下，插件已失效，暂决定在chatluna最新正式版时进行修复
+
 # koishi-plugin-chatluna-spark
 
 [![npm](https://img.shields.io/npm/v/koishi-plugin-chatluna-spark?style=flat-square)](https://www.npmjs.com/package/koishi-plugin-chatluna-spark)
