@@ -1,38 +1,33 @@
 import { Context, Schema } from 'koishi'
 import { SparkService } from './service'
 import { extendDatabase } from './database'
-import { setupCharacterInterceptor } from './middleware/character_interceptor'
 import { setupChatlunaInterceptor } from './middleware/chatluna_interceptor'
 import { ScheduledTrigger } from './triggers/scheduled'
 import { FestivalTrigger } from './triggers/festival'
 import { ProactiveTrigger } from './triggers/proactive'
-import { SparkTaskStatus } from './types'
 import { ScopeConfig } from './utils/scope'
-import { extractRealUserId } from './utils/session_helper'
-import { initUserTracking } from './utils/shared'
+import { registerSparkScheduleTool } from './tool/spark_schedule'
+import { SparkMode } from './types'
+import { installCompatPatches } from './compat/patches'
+import 'koishi-plugin-chatluna-agent'
 
 export const name = 'chatluna-spark'
 export const inject = {
-  required: ['database', 'chatluna'],
-  optional: ['chatluna_character']
+  required: ['database', 'chatluna', 'chatluna_agent']
 }
 
 export const usage = `
 ## chatluna-spark
 
-为 ChatLuna 添加主动对话能力，支持定时提醒、节日问候、主动聊天等功能。
+为 ChatLuna Agent Trigger 添加提醒、跟进、定时任务、节日问候、主动聊天等能力。
 
-访问 [插件文档](https://github.com/vioaki/koishi-plugin-chatluna-spark) 了解如何配置和使用。
+默认使用 \`spark_schedule\` tool，XML 标签作为兼容模式保留。
 `
 
 export interface Config {
-  // 基础配置
+  mode: SparkMode
   triggerTemplate: string
-
-  // 作用域
   scope: ScopeConfig
-
-  // 定时任务
   scheduled: {
     enabled: boolean
     tasks: {
@@ -41,8 +36,6 @@ export interface Config {
       prompt: string
     }[]
   }
-
-  // 节日问候
   festival: {
     enabled: boolean
     promptTemplate: string
@@ -54,8 +47,6 @@ export interface Config {
       description: string
     }[]
   }
-
-  // 主动聊天
   proactive: {
     enabled: boolean
     checkInterval: number
@@ -67,18 +58,22 @@ export interface Config {
     sleepEnd: string
     prompts: string[]
   }
+  compat: {
+    qqTriggerMessageIdPatch: boolean
+  }
 }
 
 export const Config = Schema.intersect([
-  // 基础配置
   Schema.object({
+    mode: Schema.union(['tool', 'xml', 'both'])
+      .default('tool')
+      .description('任务创建模式。tool：注册 spark_schedule；xml：解析 XML 标签；both：两者都启用。'),
     triggerTemplate: Schema.string()
       .role('textarea')
       .default('[系统提示：现在是提醒时间，请根据以下内容主动向用户发起对话] {content}')
-      .description('影子会话触发消息模板。{content} 会被替换为任务内容（如"提醒用户喝水"）')
+      .description('Agent Trigger 唤醒消息模板。{content} 会被替换为任务内容。')
   }).description('基础配置'),
 
-  // 作用域配置
   Schema.object({
     scope: Schema.object({
       mode: Schema.union(['全部启用', '白名单', '黑名单'])
@@ -97,7 +92,6 @@ export const Config = Schema.intersect([
     }).description('控制插件在哪些地方生效')
   }).description('作用域'),
 
-  // 定时任务
   Schema.object({
     scheduled: Schema.object({
       enabled: Schema.boolean()
@@ -116,20 +110,20 @@ export const Config = Schema.intersect([
           .description('提示词')
       }))
         .role('table')
+        .default([])
         .description('定时任务列表')
     }).description('定时任务配置')
   }).description('定时任务'),
 
-  // 节日配置
   Schema.object({
     festival: Schema.object({
       enabled: Schema.boolean()
         .default(true)
-        .description('启用节日问候（已内置 24 节气、传统节日、现代节日、西方节日）'),
+        .description('启用节日问候'),
       promptTemplate: Schema.string()
         .role('textarea')
         .default('今天是{festivalName}（{festivalDesc}），请向用户送上节日祝福。要符合你的人设，自然地表达。')
-        .description('节日提示词模板。可用变量：{festivalName}（节日名称）、{festivalDesc}（节日描述）'),
+        .description('节日提示词模板。可用变量：{festivalName}、{festivalDesc}'),
       defaultTime: Schema.string()
         .default('09:00')
         .description('默认触发时间（格式：HH:mm）'),
@@ -148,16 +142,16 @@ export const Config = Schema.intersect([
           .description('节日描述')
       }))
         .role('table')
-        .description('自定义节日（如：主人生日）')
+        .default([])
+        .description('自定义节日')
     }).description('节日问候配置')
   }).description('节日问候'),
 
-  // 主动聊天
   Schema.object({
     proactive: Schema.object({
       enabled: Schema.boolean()
         .default(false)
-        .description('启用主动聊天（长时间没有对话时，AI 主动发起聊天）'),
+        .description('启用主动聊天'),
       checkInterval: Schema.number()
         .default(15)
         .min(5)
@@ -167,7 +161,7 @@ export const Config = Schema.intersect([
         .default(2)
         .min(0.5)
         .max(24)
-        .description('初始延迟（小时）- 距离最后对话多久后开始有概率触发'),
+        .description('初始延迟（小时）'),
       initialProbability: Schema.number()
         .default(0.1)
         .min(0)
@@ -188,235 +182,165 @@ export const Config = Schema.intersect([
         .description('最大概率'),
       sleepStart: Schema.string()
         .default('23:00')
-        .description('休息开始时间（不会主动聊天）'),
+        .description('休息开始时间'),
       sleepEnd: Schema.string()
         .default('07:00')
         .description('休息结束时间'),
       prompts: Schema.array(Schema.string())
         .role('table')
         .default(['主动来找用户聊天，可以分享一些有趣的事情或者关心一下用户'])
-        .description('主动聊天提示词（随机选择一个）')
-    }).description('主动聊天配置。工作原理：距离最后对话指定时间后开始有概率主动聊天，概率逐步增加直到触发或用户主动聊天。')
-  }).description('主动聊天')
+        .description('主动聊天提示词')
+    }).description('主动聊天配置')
+  }).description('主动聊天'),
+
+  Schema.object({
+    compat: Schema.object({
+      qqTriggerMessageIdPatch: Schema.boolean()
+        .default(false)
+        .description('兼容旧版 ChatLuna/QQ 适配器在 Trigger 私聊 markdown 发送时携带虚拟 messageId 的问题。新版修复后应保持关闭。')
+    }).description('临时兼容项')
+  }).description('兼容项')
 ]) as Schema<Config>
 
 export function apply(ctx: Context, config: Config) {
   const logger = ctx.logger('spark')
 
-  // 1. 扩展数据库
   extendDatabase(ctx)
+  installCompatPatches(ctx, config.compat ?? {})
 
-  // 2. 初始化用户追踪（共享模块）
-  initUserTracking(ctx)
-
-  // 3. 注册拦截器
-  setupCharacterInterceptor(ctx, config.scope)
-  setupChatlunaInterceptor(ctx, config.scope)
-
-  // 4. 创建 Spark 服务
   const sparkService = new SparkService(ctx, config)
+  sparkService.start().catch(err => logger.warn(err))
 
-  // 5. 启动定时任务
+  if (config.mode === 'tool' || config.mode === 'both') {
+    registerSparkScheduleTool(ctx, sparkService.trigger, config.scope)
+  }
+
+  if (config.mode === 'xml' || config.mode === 'both') {
+    setupChatlunaInterceptor(ctx, sparkService.trigger, config.scope)
+  }
+
   if (config.scheduled?.enabled) {
     const scheduledTrigger = new ScheduledTrigger(ctx, config.scheduled, sparkService, config)
     scheduledTrigger.start()
-    ctx.on('dispose', () => {
-      scheduledTrigger.stop()
-    })
+    ctx.on('dispose', () => scheduledTrigger.stop())
   }
 
-  // 6. 启动节日问候
   if (config.festival?.enabled) {
     const festivalTrigger = new FestivalTrigger(ctx, config.festival, sparkService, config)
     festivalTrigger.start()
-    ctx.on('dispose', () => {
-      festivalTrigger.stop()
-    })
+    ctx.on('dispose', () => festivalTrigger.stop())
   }
 
-  // 7. 启动主动聊天
   if (config.proactive?.enabled) {
     const proactiveTrigger = new ProactiveTrigger(ctx, config.proactive, sparkService, config)
     proactiveTrigger.start()
-    ctx.on('dispose', () => {
-      proactiveTrigger.stop()
-    })
+    ctx.on('dispose', () => proactiveTrigger.stop())
   }
 
-  logger.info('Spark plugin loaded')
+  registerTaskCommands(ctx, sparkService)
+  logger.info(`Spark plugin loaded in ${config.mode} mode`)
+}
 
-  // 用户命令
+function registerTaskCommands(ctx: Context, sparkService: SparkService) {
+  const isAdmin = (session: any) => session.user && session.user.authority >= 4
 
-  ctx.command('spark.my', '查看我的待执行任务')
+  ctx.command('spark.task.list', '查看 Spark 待执行任务')
     .userFields(['authority'])
     .action(async ({ session }) => {
-      const channelId = session.channelId
-      const guildId = session.guildId
-      const userId = extractRealUserId(session.userId, channelId)
+      const tasks = (await sparkService.trigger.listSparkTasks()).filter(task =>
+        task.enabled &&
+        (isAdmin(session) || task.userId === session.userId)
+      )
 
-      logger.debug(`spark.my: userId="${userId}", channelId="${channelId}", guildId="${guildId}"`)
+      if (tasks.length === 0) return '暂无 Spark 待执行任务'
 
-      const tasks = await ctx.database.get('chatluna_spark_tasks', {
-        userId,
-        $or: [
-          { channelId },
-          { channelId: guildId }
-        ],
-        status: SparkTaskStatus.PENDING
-      })
-
-      logger.debug(`spark.my: found ${tasks.length} tasks`)
-
-      if (tasks.length === 0) {
-        return '你暂无待执行任务'
-      }
-
-      let message = `你的待执行任务 (${tasks.length})\n\n`
-
-      const formatTime = (date: Date) => {
-        const d = new Date(date)
-        const now = new Date()
-        const diff = d.getTime() - now.getTime()
-
-        if (diff < 0) return '已过期'
-        if (diff < 60000) return '即将触发'
-        if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟后`
-        if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时后`
-
-        return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${d.getMinutes().toString().padStart(2, '0')}`
-      }
-
-      tasks.forEach((task, i) => {
-        const tags = task.tags?.length ? ` [${task.tags.join(', ')}]` : ''
-        message += `${i + 1}. [ID:${task.id}]${tags} ${formatTime(task.triggerTime)}\n   ${task.content}\n\n`
-      })
-
-      return message.trim()
+      return tasks
+        .slice(0, 20)
+        .map((task, index) => {
+          const params = task.params as any
+          const next = task.nextFireAt ? formatTime(task.nextFireAt) : '被动/无下次触发'
+          return `${index + 1}. [ID:${task.id}] ${params?.sparkType ?? task.providerKind} ${next}\n   ${params?.sparkContent ?? task.name ?? ''}`
+        })
+        .join('\n\n')
     })
 
-  ctx.command('spark.cancel <id:number>', '取消指定任务')
+  ctx.command('spark.task.cancel <id:number>', '取消 Spark 任务')
     .userFields(['authority'])
-    .usage('取消指定 ID 的任务\n示例：spark.cancel 42')
     .action(async ({ session }, id) => {
-      if (!id) {
-        return '请指定任务 ID\n使用 spark.my 查看任务列表'
-      }
+      if (!id) return '请指定任务 ID'
 
-      const tasks = await ctx.database.get('chatluna_spark_tasks', { id })
+      const task = await ctx.chatluna_agent.trigger.getTask(id)
+      if (!task || !sparkService.trigger.isSparkTask(task)) return `Spark 任务 [${id}] 不存在`
+      if (task.userId !== session.userId && !isAdmin(session)) return '无法取消其他用户的任务'
 
-      if (tasks.length === 0) {
-        return `任务 [${id}] 不存在`
-      }
-
-      if (tasks[0].status !== SparkTaskStatus.PENDING) {
-        return `任务 [${id}] 已经${tasks[0].status === SparkTaskStatus.EXECUTED ? '执行' : tasks[0].status === SparkTaskStatus.CANCELLED ? '取消' : '失败'}，无法取消`
-      }
-
-      const userId = extractRealUserId(session.userId, session.channelId)
-
-      const isAdmin = session.user && session.user.authority >= 4
-      if (tasks[0].userId !== userId && !isAdmin) {
-        return '无法取消其他用户的任务'
-      }
-
-      await ctx.database.set('chatluna_spark_tasks', id, {
-        status: SparkTaskStatus.CANCELLED
-      })
-
-      ctx.emit('spark/task-cancelled', id)
-
-      return `任务 [${id}] 已取消`
+      await ctx.chatluna_agent.trigger.removeTask(id)
+      return `Spark 任务 [${id}] 已取消`
     })
 
-  // 管理员命令
+  ctx.command('spark.task.fire <id:number>', '立即触发 Spark 任务')
+    .userFields(['authority'])
+    .action(async ({ session }, id) => {
+      if (!id) return '请指定任务 ID'
 
-  ctx.command('spark.admin.tasks', '查看所有任务（管理员）')
+      const task = await ctx.chatluna_agent.trigger.getTask(id)
+      if (!task || !sparkService.trigger.isSparkTask(task)) return `Spark 任务 [${id}] 不存在`
+      if (task.userId !== session.userId && !isAdmin(session)) return '无法触发其他用户的任务'
+
+      const result = await ctx.chatluna_agent.trigger.fire(id, session)
+      return result.ok || result.deferred
+        ? `Spark 任务 [${id}] 已触发`
+        : `触发失败：${result.error?.message ?? '未知错误'}`
+    })
+
+  ctx.command('spark.task.stats', '查看 Spark 任务统计（管理员）')
     .userFields(['authority'])
     .action(async ({ session }) => {
-      if (!session.user || session.user.authority < 4) {
-        return '权限不足'
+      if (!isAdmin(session)) return '权限不足'
+
+      const tasks = await sparkService.trigger.listSparkTasks()
+      const byType: Record<string, number> = {}
+      for (const task of tasks) {
+        const type = String((task.params as any)?.sparkType ?? task.providerKind ?? 'unknown')
+        byType[type] = (byType[type] ?? 0) + 1
       }
+
+      return [
+        'Spark 任务统计',
+        `总数: ${tasks.length}`,
+        `启用: ${tasks.filter(task => task.enabled).length}`,
+        ...Object.entries(byType).map(([type, count]) => `- ${type}: ${count}`)
+      ].join('\n')
+    })
+
+  ctx.command('spark.task.clean', '清理已迁移旧任务（管理员）')
+    .userFields(['authority'])
+    .action(async ({ session }) => {
+      if (!isAdmin(session)) return '权限不足'
 
       const tasks = await ctx.database.get('chatluna_spark_tasks', {
-        status: SparkTaskStatus.PENDING
-      })
+        status: 'cancelled'
+      } as any)
+      const migratedIds = tasks
+        .filter(task => (task.metadata as any)?.migratedToTriggerTaskId)
+        .map(task => task.id)
 
-      if (tasks.length === 0) {
-        return '暂无待执行任务'
+      if (migratedIds.length > 0) {
+        await ctx.database.remove('chatluna_spark_tasks', migratedIds)
       }
 
-      let message = `所有待执行任务 (${tasks.length})\n\n`
-
-      tasks.slice(0, 20).forEach((task, i) => {
-        const time = new Date(task.triggerTime)
-        const timeStr = `${time.getMonth() + 1}/${time.getDate()} ${time.getHours()}:${time.getMinutes().toString().padStart(2, '0')}`
-        message += `${i + 1}. [ID:${task.id}] ${timeStr}\n   用户: ${task.userId}\n   ${task.content.slice(0, 30)}...\n\n`
-      })
-
-      if (tasks.length > 20) {
-        message += `... 还有 ${tasks.length - 20} 条任务`
-      }
-
-      return message.trim()
+      return `已清理 ${migratedIds.length} 条旧 Spark 任务记录`
     })
+}
 
-  ctx.command('spark.admin.stats', '查看统计信息（管理员）')
-    .userFields(['authority'])
-    .action(async ({ session }) => {
-      if (!session.user || session.user.authority < 4) {
-        return '权限不足'
-      }
+function formatTime(date: Date) {
+  const d = new Date(date)
+  const now = new Date()
+  const diff = d.getTime() - now.getTime()
 
-      const allTasks = await ctx.database.get('chatluna_spark_tasks', {})
+  if (diff < 0) return '已过期'
+  if (diff < 60000) return '即将触发'
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟后`
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时后`
 
-      const stats = {
-        pending: 0,
-        executed: 0,
-        cancelled: 0,
-        failed: 0,
-        byType: {} as Record<string, number>
-      }
-
-      for (const task of allTasks) {
-        switch (task.status) {
-          case SparkTaskStatus.PENDING: stats.pending++; break
-          case SparkTaskStatus.EXECUTED: stats.executed++; break
-          case SparkTaskStatus.CANCELLED: stats.cancelled++; break
-          case SparkTaskStatus.FAILED: stats.failed++; break
-        }
-
-        stats.byType[task.type] = (stats.byType[task.type] || 0) + 1
-      }
-
-      let message = `任务统计\n\n`
-      message += `待执行: ${stats.pending}\n`
-      message += `已执行: ${stats.executed}\n`
-      message += `已取消: ${stats.cancelled}\n`
-      message += `失败: ${stats.failed}\n\n`
-      message += `按类型:\n`
-
-      for (const [type, count] of Object.entries(stats.byType)) {
-        message += `- ${type}: ${count}\n`
-      }
-
-      return message.trim()
-    })
-
-  ctx.command('spark.admin.clean', '清理已完成的任务（管理员）')
-    .userFields(['authority'])
-    .action(async ({ session }) => {
-      if (!session.user || session.user.authority < 4) {
-        return '权限不足'
-      }
-
-      const result = await ctx.database.remove('chatluna_spark_tasks', {
-        $or: [
-          { status: SparkTaskStatus.EXECUTED },
-          { status: SparkTaskStatus.CANCELLED },
-          { status: SparkTaskStatus.FAILED }
-        ]
-      })
-
-      return `已清理 ${result.matched} 条任务记录`
-    })
+  return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${d.getMinutes().toString().padStart(2, '0')}`
 }

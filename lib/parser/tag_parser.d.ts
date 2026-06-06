@@ -1,14 +1,16 @@
 import { Context } from 'koishi';
+import { SparkTriggerAdapter } from '../service/trigger_adapter';
 export interface ParsedTag {
-    type: 'reminder' | 'follow-up' | 'memo';
+    type: 'reminder' | 'follow-up';
     data: any;
     raw: string;
 }
 export declare class TagParser {
     private ctx;
+    private adapter;
     private static readonly SUPPORTED_TAGS;
     private static readonly TAG_PATTERN;
-    constructor(ctx: Context);
+    constructor(ctx: Context, adapter: SparkTriggerAdapter);
     /**
      * 解析文本中的所有标签并执行
      */

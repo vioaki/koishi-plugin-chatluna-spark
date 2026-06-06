@@ -15,19 +15,12 @@ export declare class ScheduledTrigger {
     private config;
     private sparkService;
     private mainConfig;
-    private _jobs;
-    private _roomHelper;
+    private _created;
+    private _dispose?;
     constructor(ctx: Context, config: ScheduledConfig, sparkService: SparkService, mainConfig: Config);
     start(): void;
     stop(): void;
-    private scheduleTask;
-    private triggerTask;
-    /**
-     * ChatLuna 模式：遍历所有房间
-     */
-    private triggerChatLuna;
-    /**
-     * Character 模式：遍历配置的群组
-     */
-    private triggerCharacter;
+    private syncForSession;
+    private toCron;
+    private resolveBindingKey;
 }

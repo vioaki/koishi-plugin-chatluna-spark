@@ -1,11 +1,10 @@
 import { Context } from 'koishi'
 import { parseTime } from '../utils/time_parser'
-import { createSparkTask } from '../database'
-import { SparkTaskType, CancelEvent } from '../types'
-import { extractSessionInfo } from '../utils/session_helper'
+import { SparkScheduleType } from '../types'
+import { SparkTriggerAdapter } from '../service/trigger_adapter'
 
 export interface ParsedTag {
-  type: 'reminder' | 'follow-up' | 'memo'
+  type: 'reminder' | 'follow-up'
   data: any
   raw: string
 }
@@ -14,11 +13,13 @@ export class TagParser {
   // XML 开闭标签格式，只匹配特定的标签名
   // 匹配: <reminder time="30m">喝水</reminder>
   // 匹配: <follow-up time="2h">聊天</follow-up>
-  // 匹配: <memo time="2024-01-15 09:00">生日</memo>
-  private static readonly SUPPORTED_TAGS = ['reminder', 'follow-up', 'memo']
-  private static readonly TAG_PATTERN = /<(reminder|follow-up|memo)\s+time="([^"]+)">([\s\S]*?)<\/\1>/g
+  private static readonly SUPPORTED_TAGS = ['reminder', 'follow-up']
+  private static readonly TAG_PATTERN = /<(reminder|follow-up)\s+time="([^"]+)">([\s\S]*?)<\/\1>/g
 
-  constructor(private ctx: Context) {}
+  constructor(
+    private ctx: Context,
+    private adapter: SparkTriggerAdapter
+  ) {}
 
   /**
    * 解析文本中的所有标签并执行
@@ -97,36 +98,11 @@ export class TagParser {
     try {
       switch (tag.type) {
         case 'reminder':
-          // 用户主动要求的提醒，不会自动取消
-          await this.createTask(
-            session,
-            tag.data,
-            SparkTaskType.REMINDER,
-            [],
-            ['user-created']
-          )
+          await this.createTask(session, tag.data, 'reminder', false)
           break
 
         case 'follow-up':
-          // AI 主动聊天，用户发消息时自动取消
-          await this.createTask(
-            session,
-            tag.data,
-            SparkTaskType.FOLLOW_UP,
-            [CancelEvent.USER_MESSAGE],
-            ['ai-chat', 'auto-cancel']
-          )
-          break
-
-        case 'memo':
-          // AI 记住的事情，主动提醒用户，不会自动取消
-          await this.createTask(
-            session,
-            tag.data,
-            SparkTaskType.MEMO,
-            [],
-            ['ai-memo']
-          )
+          await this.createTask(session, tag.data, 'follow_up', true)
           break
       }
     } catch (err) {
@@ -141,43 +117,23 @@ export class TagParser {
   private async createTask(
     session: any,
     data: any,
-    type: SparkTaskType,
-    cancelOn: CancelEvent[],
-    tags: string[] = []
+    type: SparkScheduleType,
+    autoCancelOnUserMessage: boolean
   ) {
-    const logger = this.ctx.logger('spark')
-
-    // 使用公共工具函数提取用户信息
-    const { realUserId, channelId, guildId } = extractSessionInfo(session)
-
-    // 清理 @ 前缀
-    let cleanChannelId = channelId
-    if (cleanChannelId?.startsWith('@')) {
-      cleanChannelId = cleanChannelId.substring(1)
+    if (!session?.bot) {
+      throw new Error('XML Spark tags require a real ChatLuna session')
     }
 
-    // 验证必要信息
-    if (!realUserId || !cleanChannelId) {
-      const errorMsg = `Invalid session: missing userId or channelId (userId=${realUserId}, channelId=${cleanChannelId})`
-      logger.error(errorMsg)
-      throw new Error(errorMsg)
-    }
-
-    // 创建任务（不保存 roomId，执行时再查询）
-    const task = await createSparkTask(this.ctx, {
-      userId: realUserId,
-      channelId: cleanChannelId,
-      guildId,
-      triggerTime: data.time,
+    return await this.adapter.createOnce({
       type,
       content: data.message,
-      cancelOn,
-      tags
+      fireAt: data.time,
+      session,
+      createdBy: session.userId ?? 'spark',
+      autoCancelOnUserMessage,
+      metadata: {
+        sparkOrigin: 'xml'
+      }
     })
-
-    // 触发任务创建事件
-    this.ctx.emit('spark/task-created', task)
-
-    return task
   }
 }

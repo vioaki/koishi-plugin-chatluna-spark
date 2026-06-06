@@ -3,9 +3,28 @@ import { Context, Session } from 'koishi'
 export enum SparkTaskType {
   REMINDER = 'reminder',                // 用户主动要求的提醒
   FOLLOW_UP = 'follow-up',              // AI 主动聊天
-  MEMO = 'memo',                        // AI 记住的事情，主动提醒用户
+  MEMO = 'memo',                        // 旧表兼容：迁移时按 reminder 处理
   SCHEDULED = 'scheduled',              // 定时任务（配置文件）
   FESTIVAL = 'festival'                 // 节日问候
+}
+
+export type SparkMode = 'tool' | 'xml' | 'both'
+
+export type SparkScheduleType = 'reminder' | 'follow_up' | 'scheduled' | 'festival' | 'proactive'
+
+export interface SparkTriggerMetadata {
+  spark: true
+  sparkType: SparkScheduleType
+  sparkContent: string
+  sparkOrigin?: 'tool' | 'xml' | 'scheduled' | 'festival' | 'legacy' | 'proactive'
+  sparkToolSource?: 'chatluna' | 'character'
+  autoCancelOnUserMessage?: boolean
+  legacyTaskId?: number
+  configKey?: string
+  conversationId?: string
+  preset?: string
+  requestId?: string
+  character?: boolean
 }
 
 export enum SparkTaskStatus {
@@ -53,67 +72,17 @@ export interface SparkTask {
   createdAt: Date
 }
 
-export interface ConversationRoom {
-  roomId: number
-  roomName: string
-  roomMasterId: string
-  conversationId: string
-  visibility: 'public' | 'private'
-  preset: string
-  model: string
-  chatMode: string
-  autoUpdate: boolean
-  updatedTime: Date
-}
-
-export interface ChatHubUser {
-  userId: string
-  groupId: string
-  defaultRoomId: number
-}
-
-export interface ChatHubMessage {
-  id: string
-  text: string
-  role: string
-  conversation: string
-  userId: string
-  createdAt: Date
-}
-
-// chatluna-character 消息类型
-export interface CharacterMessage {
-  content: string
-  name: string
-  id: string
-  messageId?: string
-  timestamp?: number
-  quote?: CharacterMessage
-  images?: {
-    url: string
-    hash: string
-    formatted: string
-  }[]
-}
-
 // ===== Koishi 模块扩展 =====
 declare module 'koishi' {
   interface Tables {
     chatluna_spark_tasks: SparkTask
-    chathub_room: ConversationRoom
-    chathub_user: ChatHubUser
-    chathub_message: ChatHubMessage
   }
 
   interface Context {
     chatluna: any
-    chatluna_character?: any  // chatluna-character 插件（可选）
   }
 
   interface Events {
-    // chatluna-character 事件
-    'chatluna_character/message_collect'(session: Session, messages: CharacterMessage[]): void | Promise<void>
-    // chatluna 事件
     'chatluna/after-chat'(
       conversationId: string,
       sourceMessage: any,

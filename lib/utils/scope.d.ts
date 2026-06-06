@@ -11,8 +11,11 @@ export interface ScopeConfig {
 }
 /**
  * 检查频道是否在作用域内
- * @param channelId 频道 ID（私聊为 private:xxx，群聊为群号）
+ * @param channelId 频道 ID（私聊可为 private:xxx，群聊为频道或群号）
  * @param scope 作用域配置
+ * @param isDirect 显式指定是否私聊，优先于 channelId 前缀判断
+ * @param userId 私聊用户 ID，用于匹配私聊白/黑名单
  * @returns 是否允许
  */
-export declare function isInScope(channelId: string, scope: ScopeConfig): boolean;
+export declare function isInScope(channelId: string | undefined, scope: ScopeConfig, isDirect?: boolean, userId?: string, guildId?: string): boolean;
+export declare function isSessionInScope(session: any, scope?: ScopeConfig): boolean;

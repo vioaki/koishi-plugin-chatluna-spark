@@ -1,0 +1,8 @@
+node_modules/
+.koishi-sandbox/
+koishi-app/
+.koishi-create-cache/
+.koishi-create-tmp/
+.koishi-local-packages/
+chatluna/
+chatluna-character/

@@ -17,15 +17,14 @@ export declare class FestivalTrigger {
     private config;
     private sparkService;
     private mainConfig;
-    private _jobs;
     private _festivals;
-    private _roomHelper;
+    private _created;
+    private _dispose?;
     constructor(ctx: Context, config: FestivalConfig, sparkService: SparkService, mainConfig: Config);
-    private loadFestivals;
     start(): void;
     stop(): void;
-    private scheduleFestival;
-    private triggerFestival;
-    private triggerChatLuna;
-    private triggerCharacter;
+    private loadFestivals;
+    private syncForSession;
+    private toFireAt;
+    private resolveBindingKey;
 }

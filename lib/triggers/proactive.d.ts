@@ -18,14 +18,12 @@ export declare class ProactiveTrigger {
     private sparkService;
     private mainConfig;
     private _timer;
-    private _roomHelper;
     private _roomStates;
+    private _dispose?;
     constructor(ctx: Context, config: ProactiveConfig, sparkService: SparkService, mainConfig: Config);
-    private listenToChatEvents;
     start(): void;
     stop(): void;
     private isInSleepTime;
     private checkAndTrigger;
-    private checkChatLuna;
-    private checkCharacter;
+    private getSessionKey;
 }

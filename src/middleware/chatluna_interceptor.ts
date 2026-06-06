@@ -1,14 +1,15 @@
 import { Context, Session } from 'koishi'
 import { TagParser } from '../parser/tag_parser'
-import { isInScope, ScopeConfig } from '../utils/scope'
-import { lastUserMap, TAG_PATTERN } from '../utils/shared'
+import { isSessionInScope, ScopeConfig } from '../utils/scope'
+import { TAG_PATTERN } from '../utils/shared'
+import { SparkTriggerAdapter } from '../service/trigger_adapter'
 
 /**
  * ChatLuna 主插件专用拦截器
  * 通过 chatChain 中间件获取 AI 响应，检测标签、创建任务、并修改消息移除标签
  */
-export function setupChatlunaInterceptor(ctx: Context, scope?: ScopeConfig) {
-  const tagParser = new TagParser(ctx)
+export function setupChatlunaInterceptor(ctx: Context, adapter: SparkTriggerAdapter, scope?: ScopeConfig) {
+  const tagParser = new TagParser(ctx, adapter)
 
   ctx.on('ready', () => {
     if (!ctx.chatluna?.chatChain) {
@@ -24,7 +25,7 @@ export function setupChatlunaInterceptor(ctx: Context, scope?: ScopeConfig) {
             return 2
           }
 
-          if (scope && session?.channelId && !isInScope(session.channelId, scope)) {
+          if (!isSessionInScope(session, scope)) {
             return 2
           }
 
@@ -46,17 +47,7 @@ export function setupChatlunaInterceptor(ctx: Context, scope?: ScopeConfig) {
           }
           TAG_PATTERN.lastIndex = 0
 
-          const channelId = session?.channelId
-          const userRecord = channelId ? lastUserMap.get(channelId) : null
-          const realUserId = userRecord?.userId || session?.userId
-
-          const enhancedSession = {
-            userId: realUserId,
-            channelId: session?.channelId,
-            guildId: session?.guildId
-          }
-
-          const { cleanText, results } = await tagParser.parseAndExecute(content, enhancedSession)
+          const { cleanText, results } = await tagParser.parseAndExecute(content, session)
 
           if (results.length > 0) {
             if (typeof responseMessage.content === 'string') {

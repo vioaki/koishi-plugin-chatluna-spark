@@ -14,16 +14,25 @@ export interface ScopeConfig {
 
 /**
  * 检查频道是否在作用域内
- * @param channelId 频道 ID（私聊为 private:xxx，群聊为群号）
+ * @param channelId 频道 ID（私聊可为 private:xxx，群聊为频道或群号）
  * @param scope 作用域配置
+ * @param isDirect 显式指定是否私聊，优先于 channelId 前缀判断
+ * @param userId 私聊用户 ID，用于匹配私聊白/黑名单
  * @returns 是否允许
  */
-export function isInScope(channelId: string, scope: ScopeConfig): boolean {
+export function isInScope(
+  channelId: string | undefined,
+  scope: ScopeConfig,
+  isDirect?: boolean,
+  userId?: string,
+  guildId?: string
+): boolean {
   if (!scope || scope.mode === '全部启用') {
     return true
   }
 
-  const isPrivate = channelId?.startsWith('private:')
+  const isPrivate = isDirect ?? channelId?.startsWith('private:') ?? false
+  const ids = new Set([channelId, guildId, userId].filter(Boolean))
 
   // 检查是否匹配列表中的项
   const isInList = scope.list?.some(item => {
@@ -33,7 +42,9 @@ export function isInScope(channelId: string, scope: ScopeConfig): boolean {
       // 如果没有指定 ID，匹配所有私聊
       if (!item.id) return true
       // 否则匹配具体的私聊 ID
-      const privateId = channelId.replace('private:', '')
+      const privateId = channelId?.startsWith('private:')
+        ? channelId.replace('private:', '')
+        : userId
       return privateId === item.id
     } else if (item.type === '群聊') {
       // 群聊类型
@@ -41,7 +52,7 @@ export function isInScope(channelId: string, scope: ScopeConfig): boolean {
       // 如果没有指定 ID，匹配所有群聊
       if (!item.id) return true
       // 否则匹配具体的群号
-      return channelId === item.id
+      return ids.has(item.id)
     }
     return false
   }) || false
@@ -55,4 +66,15 @@ export function isInScope(channelId: string, scope: ScopeConfig): boolean {
   }
 
   return true
+}
+
+export function isSessionInScope(session: any, scope?: ScopeConfig): boolean {
+  if (!scope) return true
+  return isInScope(
+    session?.channelId,
+    scope,
+    session?.isDirect,
+    session?.userId,
+    session?.guildId
+  )
 }
