@@ -27,7 +27,26 @@ export const usage = `
 为 ChatLuna 添加提醒、跟进、定时任务、节日问候、主动聊天等能力。
 底层基于 ChatLuna Agent Trigger 创建和唤醒任务。
 
-默认使用 \`spark_schedule\` tool，也可以切换为 XML 标签模式。
+### 当前会话加入 target
+
+节日问候、配置定时任务、主动聊天只对已加入 target 的会话生效。
+
+\`\`\`
+spark.target.add [名称]
+\`\`\`
+
+群聊默认加入整个群；只想绑定当前群内个人：
+
+\`\`\`
+spark.target.add --personal [名称]
+\`\`\`
+
+### 管理 target
+
+\`\`\`
+spark.target.list
+spark.target.features <id> [festival scheduled proactive|all|none]
+\`\`\`
 `
 
 export function apply(ctx: Context, config: Config) {

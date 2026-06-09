@@ -63,20 +63,26 @@ content 写到时间后希望你主动对用户说的话或要做的事。
 
 Spark 不再提供独立的“作用域”配置。需要限制插件在哪些会话生效时，使用 Koishi 自带的插件管理、权限、适配器配置，或 ChatLuna Agent 的工具权限。
 
-## 主动目标白名单
+## 主动目标
 
-`spark_schedule` 和 XML 创建的提醒/跟进仍按当前会话即时创建，不需要 target 白名单。以下配置型主动功能必须先注册 target：
+节日问候、固定定时任务、主动聊天只对已加入 target 的会话生效。
 
-- 节日问候
-- 固定定时任务
-- 主动聊天
+### 当前会话加入 target
 
-target 使用数据库保存，并通过命令统一管理。请在目标会话中使用：
+```sh
+spark.target.add [名称]
+```
+
+群聊默认加入整个群；只想绑定当前群内个人：
+
+```sh
+spark.target.add --personal [名称]
+```
+
+### 管理 target
 
 | 命令                                    | 说明                                                                       |
 | --------------------------------------- | -------------------------------------------------------------------------- |
-| `spark.target.add [name]`               | 将当前会话加入 target 白名单                                               |
-| `spark.target.add --personal [name]`    | 群聊中注册 personal target；私聊会忽略该选项                               |
 | `spark.target.list`                     | 列出已注册 target                                                          |
 | `spark.target.remove <id>`              | 删除 target                                                                |
 | `spark.target.enable <id>`              | 启用 target                                                                |
@@ -85,8 +91,6 @@ target 使用数据库保存，并通过命令统一管理。请在目标会话�
 | `spark.target.features <id> [features]` | 查看或设置 target 功能；可用 `festival scheduled proactive`、`all`、`none` |
 
 `spark.target.*` 命令需要管理员权限。
-
-私聊 target 固定为 `direct/personal`。群聊默认注册为 `group/shared`，适合整个群共享一个主动目标；需要只对群内某个用户建立个人绑定时使用 `--personal`。
 
 `features` 控制 target 上启用哪些配置型主动功能，默认三项全开：`festival`、`scheduled`、`proactive`。关闭某个 feature 或停用 target 后，Spark 会在重载/同步时禁用对应的配置型 Agent Trigger 任务。
 
