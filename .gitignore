@@ -1,4 +1,8 @@
 node_modules/
+lib/
+*.tgz
+.DS_Store
+coverage/
 .koishi-sandbox/
 koishi-app/
 .koishi-create-cache/

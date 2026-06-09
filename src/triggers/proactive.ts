@@ -1,30 +1,19 @@
 import { Context, Session } from 'koishi'
 import { SparkService } from '../service'
-import { isSessionInScope } from '../utils/scope'
-import { Config } from '../index'
+import { Config, ProactiveConfig } from '../config'
+import { SparkTargetEntry } from '../service/targets'
 
-export interface ProactiveConfig {
-  enabled: boolean
-  checkInterval: number
-  initialDelay: number
-  initialProbability: number
-  probabilityIncrease: number
-  maxProbability: number
-  sleepStart: string
-  sleepEnd: string
-  prompts: string[]
-}
-
-interface RoomState {
-  session: Session
+export interface RoomState {
+  target: SparkTargetEntry
   lastChatTime: number
   currentProbability: number
 }
 
 export class ProactiveTrigger {
-  private _timer: any
+  private _disposeTimer?: () => void
   private _roomStates: Map<string, RoomState> = new Map()
-  private _dispose?: () => void
+  private _disposeMessage?: () => void
+  private _disposeTargets?: () => void
 
   constructor(
     private ctx: Context,
@@ -36,37 +25,83 @@ export class ProactiveTrigger {
   start() {
     if (!this.config.enabled) return
 
-    this._dispose = this.ctx.on('message', (session) => {
-      if (!isSessionInScope(session, this.mainConfig.scope)) {
-        return
-      }
-
-      this._roomStates.set(this.getSessionKey(session), {
-        session,
-        lastChatTime: Date.now(),
-        currentProbability: 0
-      })
+    this.refreshTargets().catch((err) => {
+      this.ctx
+        .logger('spark')
+        .warn(
+          `Proactive target refresh failed: ${err instanceof Error ? err.message : String(err)}`
+        )
+    })
+    this._disposeTargets = this.ctx.on('spark/targets-updated', async () => {
+      await this.refreshTargets()
     })
 
-    this._timer = this.ctx.setInterval(() => {
-      this.checkAndTrigger()
-    }, this.config.checkInterval * 60 * 1000)
+    this._disposeMessage = this.ctx.on('message', (session) => {
+      this.recordMessage(session)
+    })
 
-    this.ctx.logger('spark').info(
-      `Proactive chat enabled (check every ${this.config.checkInterval}min, delay ${this.config.initialDelay}h)`
+    this._disposeTimer = this.ctx.setInterval(
+      () => {
+        this.checkAndTrigger()
+      },
+      this.config.checkInterval * 60 * 1000
     )
+
+    this.ctx
+      .logger('spark')
+      .info(
+        `Proactive chat enabled (check every ${this.config.checkInterval}min, delay ${this.config.initialDelay}h)`
+      )
   }
 
   stop() {
-    this._dispose?.()
-    this._dispose = undefined
+    this._disposeMessage?.()
+    this._disposeMessage = undefined
+    this._disposeTargets?.()
+    this._disposeTargets = undefined
 
-    if (this._timer) {
-      clearInterval(this._timer)
-      this._timer = null
-    }
+    this._disposeTimer?.()
+    this._disposeTimer = undefined
 
     this._roomStates.clear()
+  }
+
+  async refreshTargets() {
+    const targets = await this.sparkService.targets.listRuntimeTargets('proactive')
+    const active = new Set(targets.map((target) => target.key))
+    const now = Date.now()
+
+    for (const target of targets) {
+      const existing = this._roomStates.get(target.key)
+      this._roomStates.set(target.key, {
+        target,
+        lastChatTime: existing?.lastChatTime ?? now,
+        currentProbability: existing?.currentProbability ?? 0
+      })
+    }
+
+    for (const key of this._roomStates.keys()) {
+      if (!active.has(key)) {
+        this._roomStates.delete(key)
+      }
+    }
+  }
+
+  getRoomState(key: string): RoomState | undefined {
+    return this._roomStates.get(key)
+  }
+
+  recordMessage(session: Session) {
+    const keys = this.sparkService.targets.getSessionBindingKeys(session)
+    const now = Date.now()
+
+    for (const key of keys) {
+      const state = this._roomStates.get(key)
+      if (!state) continue
+
+      state.lastChatTime = now
+      state.currentProbability = 0
+    }
   }
 
   private isInSleepTime(): boolean {
@@ -81,7 +116,7 @@ export class ProactiveTrigger {
     return currentTime >= sleepStart && currentTime < sleepEnd
   }
 
-  private async checkAndTrigger() {
+  async checkAndTrigger() {
     if (this.isInSleepTime()) return
 
     const now = Date.now()
@@ -106,18 +141,20 @@ export class ProactiveTrigger {
       const prompt = prompts[Math.floor(Math.random() * prompts.length)]
 
       try {
-        const result = await this.sparkService.trigger.wakeup(state.session, 'proactive', prompt)
+        const result = await this.sparkService.trigger.wakeup(
+          state.target.routing,
+          'proactive',
+          prompt
+        )
         if (result.ok || result.deferred) {
           state.lastChatTime = now
           state.currentProbability = 0
         }
       } catch (err) {
-        this.ctx.logger('spark').warn(`Proactive wakeup failed: ${err instanceof Error ? err.message : String(err)}`)
+        this.ctx
+          .logger('spark')
+          .warn(`Proactive wakeup failed: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
-  }
-
-  private getSessionKey(session: Session) {
-    return `${session.platform}:${session.selfId}:${session.guildId ?? 'direct'}:${session.channelId ?? session.userId}`
   }
 }

@@ -1,24 +1,22 @@
 import { Context } from 'koishi'
-import { SparkTask } from './types'
 
 export function extendDatabase(ctx: Context) {
   ctx.model.extend(
-    'chatluna_spark_tasks',
+    'chatluna_spark_targets',
     {
       id: 'unsigned',
-      userId: 'string',
-      channelId: 'string',
-      guildId: 'string',
-      triggerTime: 'timestamp',
+      name: 'string',
+      enabled: 'boolean',
+      platform: 'string',
+      selfId: 'string',
       type: 'string',
-      content: 'text',
-      status: 'string',
-      cancelOn: 'json',
-      condition: 'json',
-      tags: 'json',
-      metadata: 'json',
-      roomId: 'unsigned',
-      createdAt: 'timestamp'
+      userId: 'string',
+      guildId: 'string',
+      channelId: 'string',
+      scope: 'string',
+      features: 'json',
+      createdAt: 'timestamp',
+      updatedAt: 'timestamp'
     },
     {
       primary: 'id',

@@ -61,7 +61,9 @@ export function parseTime(input: string): ParsedTime {
  */
 function parseRelativeTime(input: string): Date | null {
   // 匹配：数字 + 可选空格 + 单位
-  const match = input.match(/^(\d+(?:\.\d+)?)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?|w|weeks?)$/i)
+  const match = input.match(
+    /^(\d+(?:\.\d+)?)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?|w|weeks?)$/i
+  )
 
   if (!match) {
     return null
@@ -123,40 +125,68 @@ function parseAbsoluteTime(input: string): Date | null {
   const dateTimeMatch = input.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?$/)
   if (dateTimeMatch) {
     const [, year, month, day, hour, minute, second = '0'] = dateTimeMatch
+    const yearNumber = parseInt(year)
+    const monthNumber = parseInt(month)
+    const dayNumber = parseInt(day)
+    const hourNumber = parseInt(hour)
+    const minuteNumber = parseInt(minute)
+    const secondNumber = parseInt(second)
+    if (!isValidDateTimeParts(monthNumber, dayNumber, hourNumber, minuteNumber, secondNumber)) {
+      return null
+    }
     const date = new Date(
-      parseInt(year),
-      parseInt(month) - 1,
-      parseInt(day),
-      parseInt(hour),
-      parseInt(minute),
-      parseInt(second)
+      yearNumber,
+      monthNumber - 1,
+      dayNumber,
+      hourNumber,
+      minuteNumber,
+      secondNumber
     )
-    if (!isNaN(date.getTime())) {
+    if (
+      !isNaN(date.getTime()) &&
+      date.getFullYear() === yearNumber &&
+      date.getMonth() === monthNumber - 1 &&
+      date.getDate() === dayNumber
+    ) {
       return date
     }
+    return null
   }
 
   // 2. 仅日期格式: 2024-01-15 (默认当天 00:00)
   const dateOnlyMatch = input.match(/^(\d{4})-(\d{2})-(\d{2})$/)
   if (dateOnlyMatch) {
     const [, year, month, day] = dateOnlyMatch
-    const date = new Date(
-      parseInt(year),
-      parseInt(month) - 1,
-      parseInt(day),
-      0, 0, 0
-    )
-    if (!isNaN(date.getTime())) {
+    const yearNumber = parseInt(year)
+    const monthNumber = parseInt(month)
+    const dayNumber = parseInt(day)
+    if (!isValidDateTimeParts(monthNumber, dayNumber, 0, 0, 0)) {
+      return null
+    }
+    const date = new Date(yearNumber, monthNumber - 1, dayNumber, 0, 0, 0)
+    if (
+      !isNaN(date.getTime()) &&
+      date.getFullYear() === yearNumber &&
+      date.getMonth() === monthNumber - 1 &&
+      date.getDate() === dayNumber
+    ) {
       return date
     }
+    return null
   }
 
   // 3. 仅时间格式: 14:30 或 14:30:00
   const timeOnlyMatch = input.match(/^(\d{2}):(\d{2})(?::(\d{2}))?$/)
   if (timeOnlyMatch) {
     const [, hour, minute, second = '0'] = timeOnlyMatch
+    const hourNumber = parseInt(hour)
+    const minuteNumber = parseInt(minute)
+    const secondNumber = parseInt(second)
+    if (!isValidTimeParts(hourNumber, minuteNumber, secondNumber)) {
+      return null
+    }
     const date = new Date(now)
-    date.setHours(parseInt(hour), parseInt(minute), parseInt(second), 0)
+    date.setHours(hourNumber, minuteNumber, secondNumber, 0)
 
     // 如果时间已过，设为明天
     if (date <= now) {
@@ -173,6 +203,22 @@ function parseAbsoluteTime(input: string): Date | null {
   }
 
   return null
+}
+
+function isValidDateTimeParts(
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number
+) {
+  return (
+    month >= 1 && month <= 12 && day >= 1 && day <= 31 && isValidTimeParts(hour, minute, second)
+  )
+}
+
+function isValidTimeParts(hour: number, minute: number, second: number) {
+  return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59
 }
 
 /**

@@ -1,60 +1,69 @@
-import { StructuredTool } from '@langchain/core/tools'
+import { StructuredTool, type ToolRunnableConfig, type ToolSchemaBase } from '@langchain/core/tools'
 import { z } from 'zod'
-import type { Context } from 'koishi'
+import type { Context, Session } from 'koishi'
 import { SparkTriggerAdapter } from '../service/trigger_adapter'
 import { parseTime } from '../utils/time_parser'
-import { isSessionInScope, ScopeConfig } from '../utils/scope'
 
 type SparkToolSource = 'chatluna' | 'character'
 
 interface SparkToolRunConfig {
-  configurable?: {
-    session?: any
-    source?: SparkToolSource
-    conversationId?: string
-    preset?: string
-    userId?: string
-    agentContext?: {
-      requestId?: string
-    }
+  session?: Session
+  source?: SparkToolSource
+  conversationId?: string
+  preset?: string
+  userId?: string
+  agentContext?: {
+    requestId?: string
   }
 }
 
 const scheduleSchema = z.object({
-  type: z.enum(['reminder', 'follow_up']).describe('Task type. Use reminder for definite future reminders or remembered facts that should be brought up later. Use follow_up for optional later check-ins; follow_up is cancelled automatically if the user sends a message before it fires.'),
-  time: z.string().describe('Trigger time. Supports 30s, 5m, 2h, 1d, 1w, HH:mm, or yyyy-MM-dd HH:mm.'),
-  content: z.string().min(1).describe('The concise instruction or message the assistant should act on when the trigger fires.'),
-  replyTo: z.enum(['channel', 'user', 'silent']).optional().describe('Where to send the reply. Defaults to channel.')
+  type: z
+    .enum(['reminder', 'follow_up'])
+    .describe(
+      'Task type. Use reminder for definite future proactive messages, reminders, encouragement, check-ins, or remembered facts. Use follow_up only for optional later continuations; follow_up is cancelled automatically if the user sends a message before it fires.'
+    ),
+  time: z
+    .string()
+    .describe(
+      'Trigger time. Convert natural language time to one of these formats: 30s, 5m, 2h, 1d, 1w, HH:mm, or yyyy-MM-dd HH:mm.'
+    ),
+  content: z
+    .string()
+    .min(1)
+    .describe(
+      'The concise instruction or message the assistant should act on when the trigger fires.'
+    ),
+  replyTo: z
+    .enum(['channel', 'user', 'silent'])
+    .optional()
+    .describe('Where to send the reply. Defaults to channel.')
 })
 
-export function registerSparkScheduleTool(
-  ctx: Context,
-  adapter: SparkTriggerAdapter,
-  scope?: ScopeConfig
-) {
-  class SparkScheduleTool extends StructuredTool {
-    name = 'spark_schedule'
-    description = 'Create a future Spark trigger. Use reminder when the user asks to be reminded later, or when the assistant should remember and bring up something at a definite future time. Use follow_up only for optional later check-ins that should be cancelled if the user replies first.'
-    schema: any = scheduleSchema
+type SparkScheduleInput = z.infer<typeof scheduleSchema>
 
-    async _call(input: any, _runManager?: any, runConfig?: SparkToolRunConfig) {
-      const configurable = runConfig?.configurable
+export function registerSparkScheduleTool(ctx: Context, adapter: SparkTriggerAdapter) {
+  class SparkScheduleTool extends StructuredTool<
+    ToolSchemaBase,
+    SparkScheduleInput,
+    SparkScheduleInput,
+    string
+  > {
+    name = 'spark_schedule'
+    description =
+      'Create a future proactive Spark trigger. The assistant may call this on its own initiative when a future message would help, even without an explicit user request. Use reminder for definite future reminders, greetings, encouragement, care, or remembered facts to bring up later. Use follow_up only for optional later continuations that should be cancelled if the user replies first.'
+    schema: ToolSchemaBase = scheduleSchema as unknown as ToolSchemaBase
+
+    async _call(input: SparkScheduleInput, _runManager?: unknown, runConfig?: ToolRunnableConfig) {
+      const configurable = getSparkToolConfig(runConfig)
       const session = configurable?.session
-      const toolSource = this.getToolSource(configurable?.source)
+      const toolSource = this.getToolSource(configurable.source)
 
       if (!session?.bot) {
         return JSON.stringify({
           success: false,
           error: 'missing_session',
           message: 'Missing ChatLuna session.'
-        })
-      }
-
-      if (!isSessionInScope(session, scope)) {
-        return JSON.stringify({
-          success: false,
-          error: 'out_of_scope',
-          message: 'Spark is not enabled for this session.'
         })
       }
 
@@ -74,15 +83,15 @@ export function registerSparkScheduleTool(
           content: input.content,
           fireAt: parsed.date,
           session,
-          createdBy: session.userId ?? configurable?.userId ?? 'spark',
+          createdBy: session.userId ?? configurable.userId ?? 'spark',
           autoCancelOnUserMessage,
           replyTo: input.replyTo,
           metadata: {
             sparkOrigin: 'tool',
             sparkToolSource: toolSource,
-            conversationId: configurable?.conversationId,
-            preset: configurable?.preset,
-            requestId: configurable?.agentContext?.requestId,
+            conversationId: configurable.conversationId,
+            preset: configurable.preset,
+            requestId: configurable.agentContext?.requestId,
             character: toolSource === 'character'
           }
         })
@@ -127,4 +136,8 @@ export function registerSparkScheduleTool(
   })
 
   ctx.on('dispose', dispose)
+}
+
+function getSparkToolConfig(runConfig?: ToolRunnableConfig): SparkToolRunConfig {
+  return (runConfig?.configurable ?? {}) as SparkToolRunConfig
 }

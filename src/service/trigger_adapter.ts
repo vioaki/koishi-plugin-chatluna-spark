@@ -2,10 +2,14 @@ import { Context, Session } from 'koishi'
 import {
   bindingKeyFromSession,
   type TriggerTask,
+  type TriggerTaskParams,
+  type WakeupAction,
+  type WakeupTemplate,
   type WakeupRouting
 } from 'koishi-plugin-chatluna-agent'
-import { Config } from '../index'
-import { SparkTask, SparkTaskStatus, SparkTaskType, SparkScheduleType } from '../types'
+import { Config } from '../config'
+import { SparkScheduleType, SparkTriggerMetadata } from '../types'
+import { getSparkParams, SparkTaskParams } from '../utils/params'
 import { buildTriggerMessage } from '../utils/shared'
 
 export interface CreateSparkTriggerInput {
@@ -18,18 +22,38 @@ export interface CreateSparkTriggerInput {
   createdBy?: string
   name?: string
   autoCancelOnUserMessage?: boolean
-  metadata?: Record<string, any>
+  autoDeleteAfterFire?: boolean
+  metadata?: Partial<SparkTriggerMetadata> & Record<string, unknown>
   replyTo?: 'channel' | 'user' | 'silent'
+}
+
+type SparkWakeupOptions = WakeupTemplate & {
+  source?: WakeupAction['source']
+  requestId?: string
+  signal?: AbortSignal
 }
 
 export class SparkTriggerAdapter {
   private _logger = this.ctx.logger('spark:trigger')
+  private _disposeAutoCancel?: () => void
+  private _disposeCleanupReady?: () => void
+  private _disposeCleanupTimer?: () => void
 
   constructor(
     private ctx: Context,
     private config: Config
   ) {
     this.listenForAutoCancel()
+    this.startExecutedAiTriggerCleanup()
+  }
+
+  stop() {
+    this._disposeAutoCancel?.()
+    this._disposeAutoCancel = undefined
+    this._disposeCleanupReady?.()
+    this._disposeCleanupReady = undefined
+    this._disposeCleanupTimer?.()
+    this._disposeCleanupTimer = undefined
   }
 
   async createOnce(input: CreateSparkTriggerInput): Promise<TriggerTask> {
@@ -37,24 +61,21 @@ export class SparkTriggerAdapter {
       throw new Error('fireAt must be in the future')
     }
 
-    const bindingKey = input.bindingKey ?? (
-      input.session ? await this.resolveSessionBindingKey(input.session) : undefined
-    )
+    const bindingKey =
+      input.bindingKey ??
+      (input.session ? await this.resolveSessionBindingKey(input.session) : undefined)
 
-    const task = await this.ctx.chatluna_agent.trigger.createTask(
-      this.resolveCreateSource(input),
-      {
-        providerKind: 'once',
-        name: input.name ?? this.formatTaskName(input.type, input.content),
-        bindingKey,
-        createdBy: input.createdBy ?? input.session?.userId ?? input.routing?.userId ?? 'spark',
-        source: 'plugin',
-        params: this.buildParams(input, {
-          fireAt: input.fireAt.toISOString()
-        }),
-        wakeupTemplate: this.buildWakeupTemplate(input)
-      } as any
-    )
+    const task = await this.ctx.chatluna_agent.trigger.createTask(this.resolveCreateSource(input), {
+      providerKind: 'once',
+      name: input.name ?? this.formatTaskName(input.type, input.content),
+      bindingKey,
+      createdBy: input.createdBy ?? input.session?.userId ?? input.routing?.userId ?? 'spark',
+      source: 'plugin',
+      params: this.buildParams(input, {
+        fireAt: input.fireAt.toISOString()
+      }),
+      wakeupTemplate: this.buildWakeupTemplate(input)
+    })
 
     this._logger.info(`Created Spark ${input.type} trigger [${task.id}]`)
     return task
@@ -67,32 +88,25 @@ export class SparkTriggerAdapter {
       missedRunPolicy?: 'skip' | 'fire_once'
     }
   ): Promise<TriggerTask> {
-    const task = await this.ctx.chatluna_agent.trigger.createTask(
-      source,
-      {
-        providerKind: 'cron',
-        name: input.name ?? this.formatTaskName(input.type, input.content),
-        bindingKey: input.bindingKey,
-        createdBy: input.createdBy ?? 'spark',
-        source: 'plugin',
-        params: this.buildParams(input, {
-          expression: input.expression,
-          missedRunPolicy: input.missedRunPolicy ?? 'skip'
-        }),
-        wakeupTemplate: this.buildWakeupTemplate(input)
-      } as any
-    )
+    const task = await this.ctx.chatluna_agent.trigger.createTask(source, {
+      providerKind: 'cron',
+      name: input.name ?? this.formatTaskName(input.type, input.content),
+      bindingKey: input.bindingKey,
+      createdBy: input.createdBy ?? 'spark',
+      source: 'plugin',
+      params: this.buildParams(input, {
+        expression: input.expression,
+        missedRunPolicy: input.missedRunPolicy ?? 'skip'
+      }),
+      wakeupTemplate: this.buildWakeupTemplate(input)
+    })
 
     this._logger.info(`Created Spark ${input.type} cron trigger [${task.id}]`)
     return task
   }
 
-  async wakeup(
-    source: Session | WakeupRouting,
-    type: SparkScheduleType,
-    content: string
-  ) {
-    return await this.ctx.chatluna_agent.trigger.wakeup(source, {
+  async wakeup(source: Session | WakeupRouting, type: SparkScheduleType, content: string) {
+    const options: SparkWakeupOptions = {
       message: buildTriggerMessage(this.config.triggerTemplate, content),
       replyTo: 'channel',
       execMode: 'chain',
@@ -106,107 +120,62 @@ export class SparkTriggerAdapter {
           sparkOrigin: 'proactive'
         }
       }
-    } as any)
+    }
+
+    return await this.ctx.chatluna_agent.trigger.wakeup(source, options)
   }
 
   async listSparkTasks() {
     const tasks = await this.ctx.chatluna_agent.trigger.listTasks()
-    return tasks.filter(task => this.isSparkTask(task))
+    return tasks.filter((task) => this.isSparkTask(task))
   }
 
   async findSparkTaskByConfigKey(bindingKey: string, configKey: string) {
     const tasks = await this.listSparkTasks()
-    return tasks.find(task =>
-      task.enabled &&
-      task.bindingKey === bindingKey &&
-      (task.params as any)?.configKey === configKey
+    return tasks.find(
+      (task) => task.bindingKey === bindingKey && getSparkParams(task)?.configKey === configKey
+    )
+  }
+
+  async findSparkTaskByTargetKey(providerKind: string, origin: string, targetKey: string) {
+    const tasks = await this.listSparkTasks()
+    return tasks.find(
+      (task) =>
+        task.providerKind === providerKind &&
+        getSparkParams(task)?.sparkOrigin === origin &&
+        getSparkParams(task)?.targetKey === targetKey
     )
   }
 
   isSparkTask(task: TriggerTask): boolean {
-    return (task.params as any)?.spark === true
+    return getSparkParams(task) != null
   }
 
-  async migrateLegacyPendingTasks() {
-    const tasks = await this.ctx.database.get('chatluna_spark_tasks', {
-      status: SparkTaskStatus.PENDING
-    })
+  async cleanupExecutedAiTriggers() {
+    if (this.config.autoDeleteExecutedAiTriggers === false) {
+      return 0
+    }
 
-    let migrated = 0
+    const tasks = await this.listSparkTasks()
+    let removed = 0
+
     for (const task of tasks) {
-      if ((task.metadata as any)?.migratedToTriggerTaskId) {
+      if (!this.isExecutedAiTriggerCleanupCandidate(task)) {
         continue
       }
 
       try {
-        const triggerTask = await this.migrateLegacyTask(task)
-        await this.ctx.database.set('chatluna_spark_tasks', task.id, {
-          status: SparkTaskStatus.CANCELLED,
-          metadata: {
-            ...(task.metadata ?? {}),
-            migratedToTriggerTaskId: triggerTask.id,
-            migratedAt: new Date()
-          }
-        })
-        migrated++
+        await this.ctx.chatluna_agent.trigger.removeTask(task.id)
+        removed++
+        this._logger.info(`Auto-deleted executed AI trigger [${task.id}]`)
       } catch (err) {
-        this._logger.warn(`Failed to migrate legacy task [${task.id}]: ${err instanceof Error ? err.message : String(err)}`)
+        this._logger.warn(
+          `Failed to auto-delete executed AI trigger [${task.id}]: ${err instanceof Error ? err.message : String(err)}`
+        )
       }
     }
 
-    if (migrated > 0) {
-      this._logger.info(`Migrated ${migrated} legacy pending task(s) to ChatLuna Agent Trigger`)
-    }
-  }
-
-  private async migrateLegacyTask(task: SparkTask) {
-    const routing = this.routingFromLegacyTask(task)
-    const legacyTriggerTime = new Date(task.triggerTime)
-    const missed = legacyTriggerTime.getTime() <= Date.now()
-    const fireAt = missed ? new Date(Date.now() + 1000) : legacyTriggerTime
-
-    return await this.createOnce({
-      type: this.mapLegacyType(task.type),
-      content: task.content,
-      fireAt,
-      routing,
-      createdBy: task.userId || 'spark',
-      name: `Spark legacy #${task.id}`,
-      autoCancelOnUserMessage: task.cancelOn?.includes('user-message' as any),
-      metadata: {
-        sparkOrigin: 'legacy',
-        legacyTaskId: task.id,
-        legacyTags: task.tags ?? [],
-        legacyTriggerTime: legacyTriggerTime.toISOString(),
-        legacyMissed: missed
-      }
-    })
-  }
-
-  private routingFromLegacyTask(task: SparkTask): WakeupRouting {
-    const channelId = task.channelId
-    const isDirect = channelId?.startsWith('private:') || !task.guildId
-    const userId = isDirect && channelId?.startsWith('private:')
-      ? channelId.replace('private:', '')
-      : task.userId
-
-    const bot = this.getFallbackBot()
-    if (!bot && (!(task.metadata as any)?.platform || !(task.metadata as any)?.selfId)) {
-      throw new Error('Cannot migrate legacy task without an available bot or stored routing metadata')
-    }
-
-    return {
-      platform: (task.metadata as any)?.platform ?? bot.platform,
-      selfId: (task.metadata as any)?.selfId ?? bot.selfId,
-      userId,
-      guildId: isDirect ? undefined : task.guildId ?? channelId,
-      channelId: isDirect ? undefined : channelId,
-      isDirect
-    }
-  }
-
-  private getFallbackBot() {
-    return Object.values(this.ctx.bots)[0]
+    return removed
   }
 
   private resolveCreateSource(input: CreateSparkTriggerInput): Session | WakeupRouting {
@@ -215,7 +184,9 @@ export class SparkTriggerAdapter {
     throw new Error('Spark trigger requires a session or routing')
   }
 
-  private buildWakeupTemplate(input: Pick<CreateSparkTriggerInput, 'content' | 'replyTo'>) {
+  private buildWakeupTemplate(
+    input: Pick<CreateSparkTriggerInput, 'content' | 'replyTo'>
+  ): WakeupTemplate {
     return {
       message: buildTriggerMessage(this.config.triggerTemplate, input.content),
       replyTo: input.replyTo ?? 'channel',
@@ -225,32 +196,50 @@ export class SparkTriggerAdapter {
   }
 
   private buildParams(
-    input: Pick<CreateSparkTriggerInput, 'type' | 'content' | 'autoCancelOnUserMessage' | 'metadata'>,
-    params: Record<string, any>
-  ) {
+    input: Pick<
+      CreateSparkTriggerInput,
+      'type' | 'content' | 'autoCancelOnUserMessage' | 'autoDeleteAfterFire' | 'metadata'
+    >,
+    params: TriggerTaskParams
+  ): SparkTaskParams {
     return {
       ...params,
       ...(input.metadata ?? {}),
       spark: true,
       sparkType: input.type,
       sparkContent: input.content,
-      autoCancelOnUserMessage: input.autoCancelOnUserMessage === true
+      autoCancelOnUserMessage: input.autoCancelOnUserMessage === true,
+      sparkAutoDeleteAfterFire: this.shouldAutoDeleteAfterFire(input)
     }
   }
 
-  private mapLegacyType(type: SparkTaskType): SparkScheduleType {
-    switch (type) {
-      case SparkTaskType.MEMO:
-        return 'reminder'
-      case SparkTaskType.FOLLOW_UP:
-        return 'follow_up'
-      case SparkTaskType.SCHEDULED:
-        return 'scheduled'
-      case SparkTaskType.FESTIVAL:
-        return 'festival'
-      default:
-        return 'reminder'
+  private shouldAutoDeleteAfterFire(
+    input: Pick<CreateSparkTriggerInput, 'autoDeleteAfterFire' | 'metadata'>
+  ) {
+    if (input.autoDeleteAfterFire != null) {
+      return input.autoDeleteAfterFire
     }
+    if (this.config.autoDeleteExecutedAiTriggers === false) {
+      return false
+    }
+
+    const origin = input.metadata?.sparkOrigin
+    return origin === 'tool' || origin === 'xml'
+  }
+
+  private isExecutedAiTriggerCleanupCandidate(task: TriggerTask) {
+    const params = getSparkParams(task)
+    const origin = params?.sparkOrigin
+
+    return (
+      task.providerKind === 'once' &&
+      params?.sparkAutoDeleteAfterFire === true &&
+      (origin === 'tool' || origin === 'xml') &&
+      task.enabled === false &&
+      task.fireCount > 0 &&
+      task.lastFiredAt != null &&
+      (task.lastError == null || task.lastError === '')
+    )
   }
 
   private formatTaskName(type: SparkScheduleType, content: string) {
@@ -259,13 +248,14 @@ export class SparkTriggerAdapter {
   }
 
   private listenForAutoCancel() {
-    this.ctx.on('message', async (session) => {
+    this._disposeAutoCancel = this.ctx.on('message', async (session) => {
       try {
         const bindingKey = await this.resolveSessionBindingKey(session)
-        const tasks = (await this.listSparkTasks()).filter(task =>
-          task.enabled &&
-          task.bindingKey === bindingKey &&
-          (task.params as any)?.autoCancelOnUserMessage === true
+        const tasks = (await this.listSparkTasks()).filter(
+          (task) =>
+            task.enabled &&
+            task.bindingKey === bindingKey &&
+            getSparkParams(task)?.autoCancelOnUserMessage === true
         )
 
         for (const task of tasks) {
@@ -273,9 +263,28 @@ export class SparkTriggerAdapter {
           this._logger.info(`Auto-cancelled follow-up trigger [${task.id}] by user message`)
         }
       } catch (err) {
-        this._logger.debug(`Auto-cancel check skipped: ${err instanceof Error ? err.message : String(err)}`)
+        this._logger.debug(
+          `Auto-cancel check skipped: ${err instanceof Error ? err.message : String(err)}`
+        )
       }
     })
+  }
+
+  private startExecutedAiTriggerCleanup() {
+    if (this.config.autoDeleteExecutedAiTriggers === false) {
+      return
+    }
+
+    const cleanup = () => {
+      this.cleanupExecutedAiTriggers().catch((err) => {
+        this._logger.debug(
+          `Auto-delete cleanup skipped: ${err instanceof Error ? err.message : String(err)}`
+        )
+      })
+    }
+
+    this._disposeCleanupReady = this.ctx.on('ready', cleanup)
+    this._disposeCleanupTimer = this.ctx.setInterval?.(cleanup, 60 * 1000)
   }
 
   private async resolveSessionBindingKey(session: Session) {

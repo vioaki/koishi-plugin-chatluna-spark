@@ -1,12 +1,13 @@
 {
   "name": "koishi-plugin-chatluna-spark",
-  "description": "为 ChatLuna 添加主动对话能力的 Koishi 插件，支持定时提醒、节日问候、主动聊天等功能",
-  "version": "0.4.0",
+  "description": "为 ChatLuna 添加主动对话能力的 Koishi 插件，基于 ChatLuna Agent Trigger 支持定时提醒、跟进、节日问候、主动聊天等功能",
+  "version": "0.4.1",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
     "lib",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "license": "MIT",
   "author": "vioaki",
@@ -30,15 +31,28 @@
   },
   "koishi": {
     "description": {
-      "zh": "为 ChatLuna 添加主动对话能力，支持定时提醒、节日问候、主动聊天等功能"
+      "zh": "为 ChatLuna 添加主动对话能力，基于 ChatLuna Agent Trigger 支持定时提醒、跟进、节日问候、主动聊天等功能"
     },
     "service": {
-      "required": ["database", "chatluna", "chatluna_agent"]
+      "required": [
+        "database",
+        "chatluna",
+        "chatluna_agent"
+      ]
     }
   },
   "scripts": {
+    "clean": "rm -rf lib",
     "build": "tsc",
-    "test": "npm run build && node --test tests/*.test.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "npm run typecheck && npm run format:check",
+    "format": "prettier --write \"{src,tests}/**/*.{ts,js}\" \"*.json\" README.md",
+    "format:check": "prettier --check \"{src,tests}/**/*.{ts,js}\" \"*.json\" README.md",
+    "audit:prod": "npm audit --omit=dev",
+    "test:unit": "npm run build && node --test tests/*.test.js",
+    "test:package": "npm pack --dry-run --json",
+    "test": "npm run typecheck && npm run test:unit && npm run test:package",
+    "prepack": "npm run clean && npm run build",
     "watch": "tsc -w"
   },
   "dependencies": {
@@ -52,9 +66,14 @@
   },
   "devDependencies": {
     "koishi": "^4.18.9",
-    "koishi-plugin-chatluna": "latest",
-    "koishi-plugin-chatluna-agent": "^1.0.32",
+    "koishi-plugin-chatluna": "1.4.0-alpha.22",
+    "koishi-plugin-chatluna-agent": "1.0.32",
+    "prettier": "^3.6.2",
     "typescript": "^5.0.0",
     "@types/node": "^20.0.0"
+  },
+  "overrides": {
+    "langsmith": "0.6.0",
+    "uuid": "^11.1.1"
   }
 }

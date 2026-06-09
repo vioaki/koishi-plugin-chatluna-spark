@@ -1,95 +1,100 @@
 import { Context, Session } from 'koishi'
 
-export enum SparkTaskType {
-  REMINDER = 'reminder',                // 用户主动要求的提醒
-  FOLLOW_UP = 'follow-up',              // AI 主动聊天
-  MEMO = 'memo',                        // 旧表兼容：迁移时按 reminder 处理
-  SCHEDULED = 'scheduled',              // 定时任务（配置文件）
-  FESTIVAL = 'festival'                 // 节日问候
-}
-
 export type SparkMode = 'tool' | 'xml' | 'both'
 
 export type SparkScheduleType = 'reminder' | 'follow_up' | 'scheduled' | 'festival' | 'proactive'
+
+export type SparkTargetFeature = 'festival' | 'scheduled' | 'proactive'
+export type SparkTargetType = 'direct' | 'group'
+export type SparkTargetScope = 'personal' | 'shared'
+
+export interface SparkTarget {
+  name: string
+  enabled: boolean
+  platform: string
+  selfId: string
+  type: SparkTargetType
+  userId: string
+  guildId?: string
+  channelId?: string
+  scope: SparkTargetScope
+  features: SparkTargetFeature[]
+}
+
+export interface SparkTargetRecord extends SparkTarget {
+  id: number
+  createdAt: Date
+  updatedAt: Date
+}
 
 export interface SparkTriggerMetadata {
   spark: true
   sparkType: SparkScheduleType
   sparkContent: string
-  sparkOrigin?: 'tool' | 'xml' | 'scheduled' | 'festival' | 'legacy' | 'proactive'
+  sparkOrigin?: 'tool' | 'xml' | 'scheduled' | 'festival' | 'proactive'
   sparkToolSource?: 'chatluna' | 'character'
   autoCancelOnUserMessage?: boolean
-  legacyTaskId?: number
   configKey?: string
   conversationId?: string
   preset?: string
   requestId?: string
   character?: boolean
+  sparkAutoDeleteAfterFire?: boolean
+  targetKey?: string
+  festivalName?: string
+  festivalDate?: string
 }
 
-export enum SparkTaskStatus {
-  PENDING = 'pending',
-  EXECUTED = 'executed',
-  CANCELLED = 'cancelled',
-  FAILED = 'failed'
+export interface ChatLunaToolRegistration {
+  description: string
+  selector: () => boolean
+  meta?: Record<string, unknown>
+  createTool: () => unknown
 }
 
-export enum CancelEvent {
-  USER_MESSAGE = 'user-message',
-  TASK_COMPLETED = 'task-completed',
-  MANUAL = 'manual'
+export interface ChatLunaMiddlewareChain {
+  after(name: string): {
+    before(name: string): void
+  }
 }
 
-export enum TaskConditionType {
-  USER_IDLE = 'user-idle',
-  TIME_RANGE = 'time-range',
-  CUSTOM = 'custom'
+export interface ChatLunaChatChainLike {
+  middleware<TContext>(
+    name: string,
+    handler: (session: Session, context: TContext) => number | Promise<number>
+  ): ChatLunaMiddlewareChain
 }
 
-export interface TaskCondition {
-  type: TaskConditionType | string
-  duration?: number
-  startTime?: Date
-  endTime?: Date
-  params?: any
-  data?: any
-}
-
-export interface SparkTask {
-  id: number
-  userId: string
-  channelId: string
-  guildId?: string
-  triggerTime: Date
-  type: SparkTaskType
-  content: string
-  status: SparkTaskStatus
-  cancelOn: CancelEvent[]
-  condition?: TaskCondition
-  tags?: string[]
-  metadata?: Record<string, any>
-  roomId?: number
-  createdAt: Date
+export interface ChatLunaServiceLike {
+  platform: {
+    registerTool(name: string, spec: ChatLunaToolRegistration): () => void
+  }
+  chatChain?: ChatLunaChatChainLike
+  conversation: {
+    resolveConstraint(session: Session): Promise<{ bindingKey: string }>
+  }
 }
 
 // ===== Koishi 模块扩展 =====
 declare module 'koishi' {
-  interface Tables {
-    chatluna_spark_tasks: SparkTask
+  interface Context {
+    chatluna: ChatLunaServiceLike
   }
 
-  interface Context {
-    chatluna: any
+  interface Tables {
+    chatluna_spark_targets: SparkTargetRecord
   }
 
   interface Events {
     'chatluna/after-chat'(
       conversationId: string,
-      sourceMessage: any,
-      responseMessage: any,
-      promptVariables: any,
-      chatInterface: any,
+      sourceMessage: unknown,
+      responseMessage: unknown,
+      promptVariables: unknown,
+      chatInterface: unknown,
       session: Session
     ): void | Promise<void>
+
+    'spark/targets-updated'(): void | Promise<void>
   }
 }
