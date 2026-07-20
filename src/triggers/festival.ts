@@ -1,16 +1,10 @@
 import { Context } from 'koishi'
-import {
-  type TriggerProvider,
-  type TriggerTask,
-  type WakeupTemplate
-} from 'koishi-plugin-chatluna-agent'
-import { z } from 'zod'
+import type { TriggerTask } from 'koishi-plugin-chatluna-agent'
 import { Config, FestivalConfig } from '../config'
 import { Festival, getFestivalsForYear } from '../data/festivals'
 import { SparkService } from '../service'
 import { SparkTargetEntry } from '../service/targets'
-import { getSparkParams, SparkTaskParams } from '../utils/params'
-import { buildTriggerMessage } from '../utils/shared'
+import { getSparkConfig, type SparkProviderConfig } from '../utils/params'
 
 interface NextFestival {
   festival: Festival
@@ -18,16 +12,10 @@ interface NextFestival {
   dateKey: string
 }
 
-interface FestivalPrepareInput {
-  params?: TriggerTask['params']
-  wakeupTemplate?: WakeupTemplate
-}
-
-const FESTIVAL_OVERDUE_HEAL_INTERVAL_MS = 60 * 60 * 1000
-const FESTIVAL_OVERDUE_HEAL_GRACE_MS = 60 * 60 * 1000
+const FESTIVAL_HEAL_INTERVAL_MS = 60 * 60 * 1000
+const FESTIVAL_OVERDUE_GRACE_MS = 60 * 1000
 
 export class FestivalTrigger {
-  private _disposeProvider?: () => void
   private _disposeTargets?: () => void
   private _disposeHealTimer?: () => void
 
@@ -39,29 +27,17 @@ export class FestivalTrigger {
   ) {}
 
   start() {
-    if (this.config.enabled) {
-      this._disposeProvider = this.ctx.chatluna_agent.trigger.registerProvider(
-        this.createProvider()
-      )
-      this._disposeHealTimer = this.ctx.setInterval(() => {
-        this.healOverdueFestivalTasks().catch((err) => {
-          this.ctx
-            .logger('spark')
-            .debug(
-              `Festival overdue heal skipped: ${err instanceof Error ? err.message : String(err)}`
-            )
-        })
-      }, FESTIVAL_OVERDUE_HEAL_INTERVAL_MS)
-    }
-
-    this.syncTargets().catch((err) => {
-      this.ctx
-        .logger('spark')
-        .warn(`Festival target sync failed: ${err instanceof Error ? err.message : String(err)}`)
-    })
+    this.runSync('Festival target sync')
     this._disposeTargets = this.ctx.on('spark/targets-updated', async () => {
-      await this.syncTargets()
+      await this.runSync('Festival target refresh')
     })
+    this._disposeHealTimer = this.ctx.setInterval(() => {
+      this.healFestivalTasks().catch((err) => {
+        this.ctx
+          .logger('spark')
+          .warn(`Festival task heal failed: ${err instanceof Error ? err.message : String(err)}`)
+      })
+    }, FESTIVAL_HEAL_INTERVAL_MS)
   }
 
   stop() {
@@ -69,120 +45,55 @@ export class FestivalTrigger {
     this._disposeHealTimer = undefined
     this._disposeTargets?.()
     this._disposeTargets = undefined
-    this._disposeProvider?.()
-    this._disposeProvider = undefined
   }
 
-  createProvider(): TriggerProvider {
-    return {
-      kind: 'spark_festival',
-      name: 'Spark 节日祝福',
-      description: 'Spark 根据节日配置循环唤醒代理，每个 target 只保留一个任务。',
-      scheduled: true,
-      needsMessage: false,
-      schema: z.object({
-        targetKey: z.string().optional().describe('Spark target binding key.')
-      }),
-      prepare: ({ input }) => this.prepareFestivalTask(input),
-      afterFire: ({ task, firedAt }) => this.prepareFestivalTask(task, firedAt ?? new Date(), false)
-    }
-  }
-
-  async syncTargets() {
+  async syncTargets(now = new Date()) {
     const targets = this.config.enabled
       ? await this.sparkService.targets.listRuntimeTargets('festival')
       : []
     const activeTargetKeys = new Set(targets.map((target) => target.key))
 
-    for (const target of targets) {
-      await this.syncTarget(target)
-    }
+    for (const target of targets) await this.syncTarget(target, now)
 
     const tasks = (await this.sparkService.trigger.listSparkTasks()).filter(
-      (task) =>
-        task.providerKind === 'spark_festival' && getSparkParams(task)?.sparkOrigin === 'festival'
+      (task) => getSparkConfig(task)?.origin === 'festival'
     )
-
     for (const task of tasks) {
-      const targetKey = getSparkParams(task)?.targetKey
+      const targetKey = getSparkConfig(task)?.targetKey
       if (targetKey && activeTargetKeys.has(targetKey)) continue
-      if (task.enabled) {
-        await this.ctx.chatluna_agent.trigger.setEnabled(task.id, false)
-      }
+      if (task.enabled) await this.sparkService.trigger.setSparkTaskEnabled(task.id, false)
     }
   }
 
-  async healOverdueFestivalTasks(now = new Date()) {
+  async healFestivalTasks(now = new Date()) {
     if (!this.config.enabled) return 0
 
     const targets = await this.sparkService.targets.listRuntimeTargets('festival')
-    const activeTargetKeys = new Set(targets.map((target) => target.key))
+    const targetsByKey = new Map(targets.map((target) => [target.key, target]))
     const tasks = (await this.sparkService.trigger.listSparkTasks()).filter(
-      (task) =>
-        task.providerKind === 'spark_festival' && getSparkParams(task)?.sparkOrigin === 'festival'
+      (task) => getSparkConfig(task)?.origin === 'festival'
     )
     let healed = 0
 
     for (const task of tasks) {
-      const targetKey = getSparkParams(task)?.targetKey
-      if (!targetKey || !activeTargetKeys.has(targetKey)) continue
-      if (!this.isOverdueFestivalTask(task, now)) continue
+      const config = getSparkConfig(task)
+      const target = config?.targetKey ? targetsByKey.get(config.targetKey) : undefined
+      if (!config || !target || !this.needsHeal(task, now)) continue
 
       try {
-        await this.ctx.chatluna_agent.trigger.updateTask(task.id, {
-          wakeupTemplate: task.wakeupTemplate ?? this.buildBaseWakeupTemplate()
-        })
+        await this.updateFestivalTask(task, target, now, false)
         healed++
-        this.ctx.logger('spark').info(`Refreshed overdue Spark festival trigger [${task.id}]`)
+        this.ctx.logger('spark').info(`Refreshed Spark festival trigger [${task.id}]`)
       } catch (err) {
         this.ctx
           .logger('spark')
           .warn(
-            `Failed to refresh overdue Spark festival trigger [${task.id}]: ${err instanceof Error ? err.message : String(err)}`
+            `Failed to refresh Spark festival trigger [${task.id}]: ${err instanceof Error ? err.message : String(err)}`
           )
       }
     }
 
     return healed
-  }
-
-  prepareFestivalTask(
-    input: FestivalPrepareInput,
-    after = new Date(),
-    allowCurrentMinuteGrace = true
-  ): Partial<TriggerTask> {
-    const next = this.findNextFestival(after, allowCurrentMinuteGrace)
-    if (!next) {
-      return {
-        enabled: false,
-        nextFireAt: null,
-        params: {
-          ...(input.params ?? {}),
-          spark: true,
-          sparkType: 'festival',
-          sparkOrigin: 'festival'
-        }
-      }
-    }
-
-    const content = this.renderPrompt(next.festival)
-    return {
-      nextFireAt: next.fireAt,
-      params: {
-        ...(input.params ?? {}),
-        spark: true,
-        sparkType: 'festival',
-        sparkOrigin: 'festival',
-        sparkContent: content,
-        festivalName: next.festival.name,
-        festivalDate: next.dateKey
-      },
-      wakeupTemplate: {
-        ...this.buildBaseWakeupTemplate(),
-        ...(input.wakeupTemplate ?? {}),
-        message: buildTriggerMessage(this.mainConfig.triggerTemplate, content)
-      }
-    }
   }
 
   getFestivalsForYear(year: number) {
@@ -194,73 +105,111 @@ export class FestivalTrigger {
       description: festival.description,
       category: 'modern' as const
     }))
-
     return [...builtinFestivals, ...customFestivals]
   }
 
-  private async syncTarget(target: SparkTargetEntry) {
-    const params = this.buildBaseParams(target, '节日祝福')
+  findNextFestival(after: Date, allowCurrentMinuteGrace = true): NextFestival | null {
+    const zonedYear = getTimeZoneParts(after, this.mainConfig.timezone)?.year ?? after.getFullYear()
+    const years = [zonedYear, zonedYear + 1]
+    const candidates: NextFestival[] = []
+
+    for (const year of years) {
+      for (const festival of this.getFestivalsForYear(year)) {
+        const fireAt = toFestivalFireAt(
+          festival,
+          year,
+          after,
+          allowCurrentMinuteGrace,
+          this.mainConfig.timezone
+        )
+        if (!fireAt) continue
+        candidates.push({ festival, fireAt, dateKey: `${year}-${festival.date}` })
+      }
+    }
+
+    candidates.sort((a, b) => a.fireAt.getTime() - b.fireAt.getTime())
+    return candidates[0] ?? null
+  }
+
+  private async syncTarget(target: SparkTargetEntry, now: Date) {
     const existing = await this.sparkService.trigger.findSparkTaskByTargetKey(
-      'spark_festival',
       'festival',
       target.key
     )
-
-    if (existing) {
-      await this.ctx.chatluna_agent.trigger.updateTask(existing.id, {
-        enabled: true,
-        name: `Spark festival: ${target.name}`,
-        bindingKey: target.bindingKey,
-        platform: target.routing.platform,
-        selfId: target.routing.selfId,
-        userId: target.routing.userId,
-        username: target.routing.username ?? null,
-        guildId: target.routing.guildId ?? null,
-        channelId: target.routing.channelId ?? null,
-        isDirect: target.routing.isDirect,
-        params,
-        wakeupTemplate: this.buildBaseWakeupTemplate()
-      })
+    const allowGrace = (existing?.state.runCount ?? 0) === 0
+    const next = this.findNextFestival(now, allowGrace)
+    if (!next) {
+      if (existing?.enabled) await this.sparkService.trigger.setSparkTaskEnabled(existing.id, false)
       return
     }
 
-    await this.ctx.chatluna_agent.trigger.createTask(target.routing, {
-      providerKind: 'spark_festival',
+    if (existing) {
+      await this.applyFestival(existing, target, next)
+      return
+    }
+
+    const content = this.renderPrompt(next.festival)
+    await this.sparkService.trigger.createFestival(target.routing, {
+      content,
+      fireAt: next.fireAt,
+      festivalName: next.festival.name,
+      festivalDate: next.dateKey,
       name: `Spark festival: ${target.name}`,
-      bindingKey: target.bindingKey,
-      createdBy: 'spark',
-      source: 'plugin',
-      params,
-      wakeupTemplate: this.buildBaseWakeupTemplate()
+      createdBy: 'plugin:chatluna-spark',
+      bindingKey: target.key,
+      metadata: {
+        sparkOrigin: 'festival',
+        configKey: `festival:${target.key}`
+      }
     })
   }
 
-  private buildBaseParams(target: SparkTargetEntry, content: string): SparkTaskParams {
-    return {
-      spark: true,
+  private async updateFestivalTask(
+    task: TriggerTask,
+    target: SparkTargetEntry,
+    now: Date,
+    allowCurrentMinuteGrace: boolean
+  ) {
+    const next = this.findNextFestival(now, allowCurrentMinuteGrace)
+    if (!next) {
+      if (task.enabled) await this.sparkService.trigger.setSparkTaskEnabled(task.id, false)
+      return
+    }
+    await this.applyFestival(task, target, next)
+  }
+
+  private async applyFestival(task: TriggerTask, target: SparkTargetEntry, next: NextFestival) {
+    const content = this.renderPrompt(next.festival)
+    const config: SparkProviderConfig = {
+      mode: 'festival',
+      at: next.fireAt.toISOString(),
+      timezone: this.mainConfig.timezone,
       sparkType: 'festival',
-      sparkOrigin: 'festival',
-      sparkContent: content,
+      origin: 'festival',
+      content,
+      createdBy: 'plugin:chatluna-spark',
+      autoCancelOnUserMessage: false,
+      autoDeleteAfterFire: false,
       targetKey: target.key,
-      configKey: `festival:${target.key}`
+      configKey: `festival:${target.key}`,
+      festivalName: next.festival.name,
+      festivalDate: next.dateKey
     }
+    await this.sparkService.trigger.updateSparkTask(task, {
+      enabled: true,
+      name: `Spark festival: ${target.name}`,
+      config,
+      content,
+      routing: target.routing
+    })
   }
 
-  private buildBaseWakeupTemplate(): WakeupTemplate {
-    return {
-      replyTo: 'channel',
-      execMode: 'chain',
-      newConversation: false
-    }
-  }
-
-  private isOverdueFestivalTask(task: TriggerTask, now: Date) {
-    if (!task.enabled || task.nextFireAt == null) return false
-
-    const nextFireAt = new Date(task.nextFireAt).getTime()
-    if (!Number.isFinite(nextFireAt)) return false
-
-    return nextFireAt <= now.getTime() - FESTIVAL_OVERDUE_HEAL_GRACE_MS
+  private needsHeal(task: TriggerTask, now: Date) {
+    if (!task.enabled) return false
+    if (task.state.status === 'completed' || task.state.status === 'error') return true
+    if (!task.state.nextRunAt) return true
+    const nextRunAt = new Date(task.state.nextRunAt).getTime()
+    return Number.isFinite(nextRunAt) && nextRunAt <= now.getTime() - FESTIVAL_OVERDUE_GRACE_MS
   }
 
   private renderPrompt(festival: Festival) {
@@ -269,24 +218,14 @@ export class FestivalTrigger {
       .replace(/{festivalDesc}/g, festival.description)
   }
 
-  private findNextFestival(after: Date, allowCurrentMinuteGrace: boolean): NextFestival | null {
-    const years = [after.getFullYear(), after.getFullYear() + 1]
-    const candidates: NextFestival[] = []
-
-    for (const year of years) {
-      for (const festival of this.getFestivalsForYear(year)) {
-        const fireAt = toFestivalFireAt(festival, year, after, allowCurrentMinuteGrace)
-        if (!fireAt) continue
-        candidates.push({
-          festival,
-          fireAt,
-          dateKey: `${year}-${festival.date}`
-        })
-      }
+  private async runSync(label: string) {
+    try {
+      await this.syncTargets()
+    } catch (err) {
+      this.ctx
+        .logger('spark')
+        .warn(`${label} failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-
-    candidates.sort((a, b) => a.fireAt.getTime() - b.fireAt.getTime())
-    return candidates[0] ?? null
   }
 }
 
@@ -294,7 +233,8 @@ export function toFestivalFireAt(
   festival: Festival,
   year: number,
   after: Date,
-  allowCurrentMinuteGrace: boolean
+  allowCurrentMinuteGrace: boolean,
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 ) {
   const [month, day] = festival.date.split('-').map((part) => part.trim())
   const [hour, minute] = festival.time.split(':').map((part) => part.trim())
@@ -325,26 +265,78 @@ export function toFestivalFireAt(
     return null
   }
 
-  const fireAt = new Date(year, monthNumber - 1, dayNumber, hourNumber, minuteNumber, 0, 0)
+  const fireAt = zonedDate(year, monthNumber, dayNumber, hourNumber, minuteNumber, timezone)
+  if (!fireAt) return null
+  if (fireAt.getTime() > after.getTime()) return fireAt
+  if (!allowCurrentMinuteGrace) return null
+
+  const configured = getTimeZoneParts(fireAt, timezone)
+  const current = getTimeZoneParts(after, timezone)
+  const sameConfiguredMinute =
+    configured != null &&
+    current != null &&
+    configured.year === current.year &&
+    configured.month === current.month &&
+    configured.day === current.day &&
+    configured.hour === current.hour &&
+    configured.minute === current.minute
+  return sameConfiguredMinute && after.getTime() - fireAt.getTime() < 60 * 1000
+    ? new Date(after.getTime() + 1000)
+    : null
+}
+
+function zonedDate(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  timezone: string
+) {
+  let value = Date.UTC(year, month - 1, day, hour, minute)
+  for (let index = 0; index < 3; index++) {
+    const parts = getTimeZoneParts(new Date(value), timezone)
+    if (!parts) return null
+    const actual = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute)
+    const expected = Date.UTC(year, month - 1, day, hour, minute)
+    value += expected - actual
+  }
+
+  const result = new Date(value)
+  const parts = getTimeZoneParts(result, timezone)
   if (
-    Number.isNaN(fireAt.getTime()) ||
-    fireAt.getFullYear() !== year ||
-    fireAt.getMonth() !== monthNumber - 1 ||
-    fireAt.getDate() !== dayNumber
+    !parts ||
+    parts.year !== year ||
+    parts.month !== month ||
+    parts.day !== day ||
+    parts.hour !== hour ||
+    parts.minute !== minute
   ) {
     return null
   }
+  return result
+}
 
-  if (fireAt.getTime() <= after.getTime()) {
-    if (!allowCurrentMinuteGrace) return null
-
-    const sameDay =
-      fireAt.getFullYear() === after.getFullYear() &&
-      fireAt.getMonth() === after.getMonth() &&
-      fireAt.getDate() === after.getDate()
-    const withinConfiguredMinute = after.getTime() - fireAt.getTime() < 60 * 1000
-    return sameDay && withinConfiguredMinute ? new Date(after.getTime() + 1000) : null
+function getTimeZoneParts(date: Date, timezone: string) {
+  try {
+    const entries = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(date)
+    const values = Object.fromEntries(entries.map((entry) => [entry.type, entry.value]))
+    return {
+      year: Number(values.year),
+      month: Number(values.month),
+      day: Number(values.day),
+      hour: Number(values.hour),
+      minute: Number(values.minute)
+    }
+  } catch {
+    return null
   }
-
-  return fireAt
 }

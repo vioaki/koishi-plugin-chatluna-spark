@@ -47,6 +47,10 @@ spark.target.add --personal [名称]
 spark.target.list
 spark.target.features <id> [festival scheduled proactive|all|none]
 \`\`\`
+
+### Character
+
+Spark 0.5.0 只接入 ChatLuna 主链路。Character 请使用内置的 wake_up_reply_* 和空闲触发。
 `
 
 export function apply(ctx: Context, config: Config) {
@@ -56,29 +60,56 @@ export function apply(ctx: Context, config: Config) {
   const sparkService = new SparkService(ctx, config)
   ctx.on('dispose', () => sparkService.trigger.stop())
 
+  registerTaskCommands(ctx, sparkService)
+  registerTargetCommands(ctx, sparkService)
+
   if (config.mode === 'tool' || config.mode === 'both') {
-    registerSparkScheduleTool(ctx, sparkService.trigger)
+    try {
+      registerSparkScheduleTool(ctx, sparkService.trigger)
+    } catch (err) {
+      logger.error(`Spark tool registration failed: ${formatError(err)}`)
+    }
   }
 
   if (config.mode === 'xml' || config.mode === 'both') {
-    setupChatlunaInterceptor(ctx, sparkService.trigger)
+    try {
+      setupChatlunaInterceptor(ctx, sparkService.trigger)
+    } catch (err) {
+      logger.error(`Spark XML interceptor registration failed: ${formatError(err)}`)
+    }
+  }
+
+  try {
+    sparkService.trigger.start()
+  } catch (err) {
+    logger.error(`Spark Trigger V2 startup failed: ${formatError(err)}`)
   }
 
   const scheduledTrigger = new ScheduledTrigger(ctx, config.scheduled, sparkService, config)
-  scheduledTrigger.start()
+  startComponent(logger, 'Scheduled', () => scheduledTrigger.start())
   ctx.on('dispose', () => scheduledTrigger.stop())
 
   const festivalTrigger = new FestivalTrigger(ctx, config.festival, sparkService, config)
-  festivalTrigger.start()
+  startComponent(logger, 'Festival', () => festivalTrigger.start())
   ctx.on('dispose', () => festivalTrigger.stop())
 
   if (config.proactive.enabled) {
     const proactiveTrigger = new ProactiveTrigger(ctx, config.proactive, sparkService, config)
-    proactiveTrigger.start()
+    startComponent(logger, 'Proactive', () => proactiveTrigger.start())
     ctx.on('dispose', () => proactiveTrigger.stop())
   }
 
-  registerTaskCommands(ctx, sparkService)
-  registerTargetCommands(ctx, sparkService)
   logger.info(`Spark plugin loaded in ${config.mode} mode`)
+}
+
+function startComponent(logger: ReturnType<Context['logger']>, label: string, start: () => void) {
+  try {
+    start()
+  } catch (err) {
+    logger.error(`${label} component startup failed: ${formatError(err)}`)
+  }
+}
+
+function formatError(err: unknown) {
+  return err instanceof Error ? err.message : String(err)
 }

@@ -40,6 +40,7 @@ export interface ProactiveConfig {
 
 export interface Config {
   mode: SparkMode
+  timezone: string
   triggerTemplate: string
   autoDeleteExecutedAiTriggers: boolean
   scheduled: ScheduledConfig
@@ -54,6 +55,9 @@ export const Config = Schema.intersect([
       .description(
         '任务创建模式。tool：注册 spark_schedule；xml：解析 XML 标签；both：两者都启用。'
       ),
+    timezone: Schema.string()
+      .default('Asia/Shanghai')
+      .description('定时任务和节日问候使用的 IANA 时区。'),
     triggerTemplate: Schema.string()
       .role('textarea')
       .default('[系统提示：现在是提醒时间，请根据以下内容主动向用户发起对话] {content}')

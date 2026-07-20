@@ -4,17 +4,9 @@ import type { Context, Session } from 'koishi'
 import { SparkTriggerAdapter } from '../service/trigger_adapter'
 import { parseTime } from '../utils/time_parser'
 
-type SparkToolSource = 'chatluna' | 'character'
-
 interface SparkToolRunConfig {
   session?: Session
-  source?: SparkToolSource
-  conversationId?: string
-  preset?: string
   userId?: string
-  agentContext?: {
-    requestId?: string
-  }
 }
 
 const scheduleSchema = z.object({
@@ -57,7 +49,6 @@ export function registerSparkScheduleTool(ctx: Context, adapter: SparkTriggerAda
     async _call(input: SparkScheduleInput, _runManager?: unknown, runConfig?: ToolRunnableConfig) {
       const configurable = getSparkToolConfig(runConfig)
       const session = configurable?.session
-      const toolSource = this.getToolSource(configurable.source)
 
       if (!session?.bot) {
         return JSON.stringify({
@@ -87,12 +78,7 @@ export function registerSparkScheduleTool(ctx: Context, adapter: SparkTriggerAda
           autoCancelOnUserMessage,
           replyTo: input.replyTo,
           metadata: {
-            sparkOrigin: 'tool',
-            sparkToolSource: toolSource,
-            conversationId: configurable.conversationId,
-            preset: configurable.preset,
-            requestId: configurable.agentContext?.requestId,
-            character: toolSource === 'character'
+            sparkOrigin: 'tool'
           }
         })
 
@@ -112,10 +98,6 @@ export function registerSparkScheduleTool(ctx: Context, adapter: SparkTriggerAda
         })
       }
     }
-
-    private getToolSource(source: unknown): SparkToolSource {
-      return source === 'character' ? 'character' : 'chatluna'
-    }
   }
 
   const dispose = ctx.chatluna.platform.registerTool('spark_schedule', {
@@ -129,7 +111,7 @@ export function registerSparkScheduleTool(ctx: Context, adapter: SparkTriggerAda
         enabled: true,
         main: true,
         chatluna: true,
-        characterScope: 'all'
+        characterScope: 'none'
       }
     },
     createTool: () => new SparkScheduleTool()

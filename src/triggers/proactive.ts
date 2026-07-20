@@ -141,12 +141,8 @@ export class ProactiveTrigger {
       const prompt = prompts[Math.floor(Math.random() * prompts.length)]
 
       try {
-        const result = await this.sparkService.trigger.wakeup(
-          state.target.routing,
-          'proactive',
-          prompt
-        )
-        if (result.ok || result.deferred) {
+        const result = await this.sparkService.trigger.wakeup(state.target.routing, prompt)
+        if (result.ok) {
           state.lastChatTime = now
           state.currentProbability = 0
         }

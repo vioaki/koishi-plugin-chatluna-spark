@@ -2,6 +2,15 @@ import { Context, Session } from 'koishi'
 import { TagParser } from '../parser/tag_parser'
 import { TAG_PATTERN } from '../utils/shared'
 import { SparkTriggerAdapter } from '../service/trigger_adapter'
+import type { ChainMiddlewareContext } from 'koishi-plugin-chatluna/lib/chains/chain'
+
+declare module 'koishi-plugin-chatluna/lib/chains/chain' {
+  interface ChainMiddlewareName {
+    'spark-tag-processor': never
+    censor: never
+    render_message: never
+  }
+}
 
 interface TextMessagePart {
   type: string
@@ -12,10 +21,8 @@ interface ChatLunaMessageLike {
   content?: string | TextMessagePart[]
 }
 
-interface ChatLunaMiddlewareContext {
-  options?: {
-    responseMessage?: ChatLunaMessageLike
-  }
+interface SparkChainOptions {
+  responseMessage?: ChatLunaMessageLike
 }
 
 /**
@@ -33,9 +40,10 @@ export function setupChatlunaInterceptor(ctx: Context, adapter: SparkTriggerAdap
     ctx.chatluna.chatChain
       .middleware(
         'spark-tag-processor',
-        async (session: Session, context: ChatLunaMiddlewareContext) => {
+        async (session: Session, context: ChainMiddlewareContext) => {
           try {
-            const responseMessage = context.options?.responseMessage
+            const responseMessage = (context.options as SparkChainOptions | undefined)
+              ?.responseMessage
             if (!responseMessage?.content) {
               return 2
             }

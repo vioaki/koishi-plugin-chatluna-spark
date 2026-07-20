@@ -1,10 +1,6 @@
 import { Context, Session } from 'koishi'
 import {
-  bindingKeyFromRouting,
-  bindingKeyFromSession,
-  type WakeupRouting
-} from 'koishi-plugin-chatluna-agent'
-import {
+  SparkRouting,
   SparkTarget,
   SparkTargetFeature,
   SparkTargetRecord,
@@ -19,7 +15,7 @@ export interface SparkTargetEntry extends SparkTarget {
   numericId?: number
   key: string
   bindingKey: string
-  routing: WakeupRouting
+  routing: SparkRouting
 }
 
 export interface AddTargetOptions {
@@ -151,7 +147,7 @@ export class SparkTargetRegistry {
     )
   }
 
-  getBindingKey(routing: WakeupRouting, scope: SparkTargetScope = 'personal') {
+  getBindingKey(routing: SparkRouting, scope: SparkTargetScope = 'personal') {
     return bindingKeyFromRouting(routing, scope)
   }
 
@@ -166,7 +162,7 @@ export class SparkTargetRegistry {
 
   routingFromTarget(
     target: Pick<SparkTarget, 'type' | 'platform' | 'selfId' | 'userId' | 'guildId' | 'channelId'>
-  ): WakeupRouting {
+  ): SparkRouting {
     const isDirect = target.type === 'direct'
     return {
       platform: target.platform,
@@ -284,4 +280,30 @@ export class SparkTargetRegistry {
       routing
     }
   }
+}
+
+export function bindingKeyFromRouting(routing: SparkRouting, scope: SparkTargetScope = 'personal') {
+  if (scope === 'shared') {
+    return `shared:${routing.platform}:${routing.selfId}:${routing.guildId ?? routing.channelId ?? routing.userId}`
+  }
+  if (routing.isDirect) {
+    return `personal:${routing.platform}:${routing.selfId}:direct:${routing.userId}`
+  }
+  return `personal:${routing.platform}:${routing.selfId}:${routing.guildId ?? routing.channelId}:${routing.userId}`
+}
+
+export function bindingKeyFromSession(session: Session, scope: SparkTargetScope = 'personal') {
+  if (!session.userId) throw new Error('Spark session requires userId')
+  return bindingKeyFromRouting(
+    {
+      platform: session.platform,
+      selfId: session.selfId,
+      userId: session.userId,
+      username: session.username,
+      guildId: session.guildId,
+      channelId: session.channelId,
+      isDirect: session.isDirect
+    },
+    scope
+  )
 }

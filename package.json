@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-chatluna-spark",
   "description": "为 ChatLuna 添加主动对话能力的 Koishi 插件，基于 ChatLuna Agent Trigger 支持定时提醒、跟进、节日问候、主动聊天等功能",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -57,17 +57,18 @@
   },
   "dependencies": {
     "@langchain/core": "^0.3.80",
+    "cron-parser": "5.4.0",
     "zod": "3.25.76"
   },
   "peerDependencies": {
     "koishi": "^4.18.9",
-    "koishi-plugin-chatluna": "^1.4.0-alpha.22",
-    "koishi-plugin-chatluna-agent": "^1.0.32"
+    "koishi-plugin-chatluna": ">=1.4.0-alpha.40 <2.0.0",
+    "koishi-plugin-chatluna-agent": ">=1.0.41 <2.0.0"
   },
   "devDependencies": {
     "koishi": "^4.18.9",
-    "koishi-plugin-chatluna": "1.4.0-alpha.22",
-    "koishi-plugin-chatluna-agent": "1.0.32",
+    "koishi-plugin-chatluna": "1.4.0-alpha.41",
+    "koishi-plugin-chatluna-agent": "1.0.41",
     "prettier": "^3.6.2",
     "typescript": "^5.0.0",
     "@types/node": "^20.0.0"

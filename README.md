@@ -12,13 +12,15 @@
 - **自动清理** - AI 通过 tool/XML 创建的一次性触发器成功执行后默认自动删除
 - **目标白名单** - 节日祝福、固定定时任务、主动聊天只对显式注册的 target 生效
 - **定时任务** - 对白名单 target 每天定时执行指定提示词
-- **节日问候** - 每个 target 只创建一个 `spark_festival` 触发器，由 provider 滚动计算下一个节日
+- **节日问候** - 每个 target 只保留一个节日任务，执行后自动滚动到下一个节日
 - **主动聊天** - 白名单 target 长时间不说话时按概率主动发起对话
 
 ## 前置要求
 
-- `koishi-plugin-chatluna` 1.4.0-alpha.22 或更高版本
-- `koishi-plugin-chatluna-agent` 1.0.32 或更高版本
+- `koishi-plugin-chatluna` 1.4.0-alpha.40 或更高版本
+- `koishi-plugin-chatluna-agent` 1.0.41 或更高版本
+
+Spark `0.5.x` 只支持 ChatLuna Agent Trigger V2。Spark `0.4.2` 仅适用于仍使用旧 Trigger API 的环境，不能与 Agent `1.0.41+` 混用。
 
 ## 安装
 
@@ -61,6 +63,8 @@ content 写到时间后希望你主动对用户说的话或要做的事。
 
 `autoDeleteExecutedAiTriggers` 默认开启。开启后，AI 通过 `spark_schedule` 或 XML 创建的一次性 Spark 触发器成功执行后会自动从 ChatLuna Agent Trigger 中删除；Agent WebUI 人工创建任务、节日祝福和配置定时任务不会受影响。
 
+`timezone` 默认是 `Asia/Shanghai`，用于配置定时任务、Cron 和节日时间计算。可填写其他 IANA 时区，例如 `Asia/Tokyo`、`Europe/London`。
+
 Spark 不再提供独立的“作用域”配置。需要限制插件在哪些会话生效时，使用 Koishi 自带的插件管理、权限、适配器配置，或 ChatLuna Agent 的工具权限。
 
 ## 主动目标
@@ -94,7 +98,7 @@ spark.target.add --personal [名称]
 
 `features` 控制 target 上启用哪些配置型主动功能，默认三项全开：`festival`、`scheduled`、`proactive`。关闭某个 feature 或停用 target 后，Spark 会在重载/同步时禁用对应的配置型 Agent Trigger 任务。
 
-节日问候现在使用自定义 Agent Trigger provider `spark_festival`。每个启用 `festival` feature 的 target 只保留一个节日任务，任务触发后 provider 会自动滚动到下一个内置或自定义节日，避免几十个节日任务挤满 Agent Trigger 列表。
+提醒、配置定时任务和节日问候统一使用 Trigger V2 provider `chatluna-spark`。每个启用 `festival` feature 的 target 只保留一个节日任务，任务执行后会滚动到下一个内置或自定义节日。
 
 ## XML 模式提示词
 
@@ -129,11 +133,11 @@ content 写到时间后希望你主动对用户说的话或要做的事。
 <follow-up time="2h">问问用户事情处理得怎么样了</follow-up>
 ```
 
-## chatluna-character
+## ChatLuna Character
 
-`chatluna-character` 使用 ChatLuna 的全局工具注册与 Agent 工具权限。Spark 会把 `spark_schedule` 注册为 character 可用工具，是否启用仍由 ChatLuna Agent 的工具权限和 character 路由决定。
+Spark `0.5.0` 只接入 ChatLuna 主链路，不向 Character 提供 `spark_schedule`。Character 场景请使用 Character 内置的 `wake_up_reply_*` 配置和空闲触发能力。
 
-character 场景建议使用默认的 Tool 模式。XML 只作为 ChatLuna 主链路的替代模式使用。
+不要在 Character 会话中依赖 Spark 创建提醒或跟进；Character 专用执行引擎不属于本版本。
 
 ## 用户命令
 
@@ -148,13 +152,13 @@ character 场景建议使用默认的 Tool 模式。XML 只作为 ChatLuna 主�
 ## 工作原理
 
 1. Tool 或 XML 产生 Spark 任务意图
-2. Spark 将任务转换为 ChatLuna Agent Trigger 任务
+2. Spark 将任务转换为 Trigger V2 `chatluna-spark` provider 任务
 3. Agent Trigger 负责定时、唤醒、会话解析、渲染和发送
 4. `follow_up` 在用户先发消息时自动取消
 5. tool/XML 创建的一次性 AI 触发器成功执行后默认自动删除
-6. 固定定时任务按 target 白名单同步为 Agent Trigger `cron` 任务
-7. 节日问候按 target 白名单同步为 `spark_festival` provider 任务，每个 target 只保留一个
-8. `spark_festival` 会周期性刷新明显过期的任务，避免 Bot 离线/deferred 后停在旧节日
+6. 固定定时任务按 target 白名单同步为 provider `cron` 模式任务
+7. 节日问候按 target 白名单同步为 provider `festival` 模式任务，每个 target 只保留一个
+8. Spark 会周期性滚动已完成、异常或明显过期的节日任务
 9. 主动聊天只记录白名单 target 的沉默状态，并使用注册 target 的 routing 唤醒
 
 ## 项目结构
@@ -166,6 +170,7 @@ character 场景建议使用默认的 Tool 模式。XML 只作为 ChatLuna 主�
 核心模块：
 
 - `src/service/trigger_adapter.ts`：Spark 到 ChatLuna Agent Trigger 的适配层，负责创建任务、唤醒、自动取消和执行后清理。
+- `src/service/trigger_provider.ts`：Trigger V2 scheduled extension provider，统一计算 once、cron 和 festival 的下次执行时间。
 - `src/service/targets.ts`：配置型主动能力的 target 白名单、路由和 feature 合并。
 - `src/triggers/`：scheduled、festival、proactive 三类配置型主动能力。
 - `src/parser/tag_parser.ts` 和 `src/tool/spark_schedule.ts`：XML 与 tool 两个任务创建入口。
@@ -188,6 +193,13 @@ npm test
 - 配置型节日/定时/主动聊天没有触发：先用 `spark.target.list` 确认目标会话已经注册并启用对应 feature。
 - `follow_up` 被取消：这是预期行为。用户在同一会话先发消息时，Spark 会删除尚未触发的 follow-up 任务。
 - Trigger 到点后发送失败：Spark 只负责创建和同步 Agent Trigger 任务，实际发送由 ChatLuna Agent 和适配器完成；请同时检查 Agent Trigger 任务状态、Bot 在线状态和目标平台适配器日志。
+
+## 从 0.4.2 升级
+
+- 升级 ChatLuna Agent 到 `1.0.41+` 后再安装 Spark `0.5.x`。
+- 节日问候和插件配置中的定时任务会根据现有 Spark target 自动重建。
+- Spark 不读取或修改 Agent 私有数据库表。
+- `0.4.2` 创建的一次性提醒和跟进无法可靠迁移，需要重新创建。
 
 ## 许可证
 

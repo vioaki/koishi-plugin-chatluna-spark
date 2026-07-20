@@ -2,12 +2,17 @@ import { Context, Session } from 'koishi'
 import type { TriggerTask } from 'koishi-plugin-chatluna-agent'
 import { SparkService } from './service'
 import { SparkTargetFeature } from './types'
-import { getSparkParams } from './utils/params'
+import { getSparkConfig } from './utils/params'
 
 export function registerTaskCommands(ctx: Context, sparkService: SparkService) {
   const isAdmin = (session: Session) => hasAdminAuthority(session)
-  const isTaskOwner = (task: TriggerTask, session: Session) =>
-    task.userId === session.userId || task.createdBy === session.userId
+  const isTaskOwner = (task: TriggerTask, session: Session) => {
+    const config = getSparkConfig(task)
+    return (
+      task.ownerKey === `${session.platform}:${session.selfId}:${session.userId}` ||
+      config?.createdBy === session.userId
+    )
+  }
 
   ctx
     .command('spark.list', '查看 Spark 待执行任务')
@@ -15,19 +20,18 @@ export function registerTaskCommands(ctx: Context, sparkService: SparkService) {
     .action(async ({ session }) => {
       if (!session) return '当前会话不可用'
 
-      const tasks = (await sparkService.trigger.listSparkTasks()).filter(
+      const tasks = (await sparkService.trigger.listSparkTasks(session)).filter(
         (task) => task.enabled && (isAdmin(session) || isTaskOwner(task, session))
       )
-
       if (tasks.length === 0) return '暂无 Spark 待执行任务'
 
       return tasks
         .slice(0, 20)
         .map((task, index) => {
-          const params = getSparkParams(task)
-          const next = task.nextFireAt ? formatTime(task.nextFireAt) : '被动/无下次触发'
-          const type = params?.sparkType ?? task.providerKind
-          const content = params?.sparkContent ?? task.name ?? ''
+          const config = getSparkConfig(task)
+          const next = task.state.nextRunAt ? formatTime(task.state.nextRunAt) : '被动/无下次触发'
+          const type = config?.sparkType ?? 'unknown'
+          const content = config?.content ?? task.name
           return `${index + 1}. [ID:${task.id}] ${type} ${next}\n   ${content}`
         })
         .join('\n\n')
@@ -40,12 +44,15 @@ export function registerTaskCommands(ctx: Context, sparkService: SparkService) {
       if (!session) return '当前会话不可用'
       if (!id) return '请指定任务 ID'
 
-      const task = await ctx.chatluna_agent.trigger.getTask(id)
-      if (!task || !sparkService.trigger.isSparkTask(task)) return `Spark 任务 [${id}] 不存在`
-      if (!isTaskOwner(task, session) && !isAdmin(session)) return '无法取消其他用户的任务'
-
-      await ctx.chatluna_agent.trigger.removeTask(id)
-      return `Spark 任务 [${id}] 已取消`
+      try {
+        const task = await sparkService.trigger.getSparkTask(id, session)
+        if (!task) return `Spark 任务 [${id}] 不存在`
+        if (!isTaskOwner(task, session) && !isAdmin(session)) return '无法取消其他用户的任务'
+        await sparkService.trigger.removeSparkTask(id, session)
+        return `Spark 任务 [${id}] 已取消`
+      } catch (err) {
+        return formatTaskAccessError(err, id, '取消')
+      }
     })
 
   ctx
@@ -55,14 +62,18 @@ export function registerTaskCommands(ctx: Context, sparkService: SparkService) {
       if (!session) return '当前会话不可用'
       if (!id) return '请指定任务 ID'
 
-      const task = await ctx.chatluna_agent.trigger.getTask(id)
-      if (!task || !sparkService.trigger.isSparkTask(task)) return `Spark 任务 [${id}] 不存在`
-      if (!isTaskOwner(task, session) && !isAdmin(session)) return '无法触发其他用户的任务'
+      try {
+        const task = await sparkService.trigger.getSparkTask(id, session)
+        if (!task) return `Spark 任务 [${id}] 不存在`
+        if (!isTaskOwner(task, session) && !isAdmin(session)) return '无法触发其他用户的任务'
 
-      const result = await ctx.chatluna_agent.trigger.fire(id, session)
-      return result.ok || result.deferred
-        ? `Spark 任务 [${id}] 已触发`
-        : `触发失败：${result.error?.message ?? '未知错误'}`
+        const run = await sparkService.trigger.fireSparkTask(id, session)
+        return run.status === 'completed'
+          ? `Spark 任务 [${id}] 已触发`
+          : `触发失败：${run.error ?? run.status}`
+      } catch (err) {
+        return formatTaskAccessError(err, id, '触发')
+      }
     })
 
   ctx
@@ -71,10 +82,10 @@ export function registerTaskCommands(ctx: Context, sparkService: SparkService) {
     .action(async ({ session }) => {
       if (!session || !isAdmin(session)) return '权限不足'
 
-      const tasks = await sparkService.trigger.listSparkTasks()
+      const tasks = await sparkService.trigger.listSparkTasks(session)
       const byType: Record<string, number> = {}
       for (const task of tasks) {
-        const type = String(getSparkParams(task)?.sparkType ?? task.providerKind ?? 'unknown')
+        const type = getSparkConfig(task)?.sparkType ?? 'unknown'
         byType[type] = (byType[type] ?? 0) + 1
       }
 
@@ -109,7 +120,6 @@ export function registerTargetCommands(ctx: Context, sparkService: SparkService)
         personal: options?.personal
       })
       await refreshTargets()
-
       return `已加入 Spark target：${formatTarget(target)}`
     })
 
@@ -122,7 +132,6 @@ export function registerTargetCommands(ctx: Context, sparkService: SparkService)
 
       const targets = await sparkService.targets.listEntries()
       if (targets.length === 0) return '暂无 Spark target'
-
       return targets.map((target, index) => `${index + 1}. ${formatTarget(target)}`).join('\n')
     })
 
@@ -234,6 +243,13 @@ const SPARK_TARGET_FEATURES_TEXT = 'festival, scheduled, proactive'
 function hasAdminAuthority(session: Session) {
   const user = session.user as { authority?: number } | undefined
   return (user?.authority ?? 0) >= 4
+}
+
+function formatTaskAccessError(err: unknown, id: number, action: '取消' | '触发') {
+  const message = err instanceof Error ? err.message : String(err)
+  if (/permission|forbidden/i.test(message)) return `无法${action}其他用户的任务`
+  if (/not found/i.test(message)) return `Spark 任务 [${id}] 不存在`
+  return `${action}失败：${message}`
 }
 
 function formatTarget(target: {

@@ -1,10 +1,8 @@
 import { Context } from 'koishi'
-import { type TriggerTask } from 'koishi-plugin-chatluna-agent'
-import { SparkService } from '../service'
 import { Config, ScheduledConfig, ScheduledTaskConfig } from '../config'
+import { SparkService } from '../service'
 import { SparkTargetEntry } from '../service/targets'
-import { getSparkParams } from '../utils/params'
-import { buildTriggerMessage } from '../utils/shared'
+import { getSparkConfig, type SparkProviderConfig } from '../utils/params'
 
 export class ScheduledTrigger {
   private _disposeTargets?: () => void
@@ -17,13 +15,9 @@ export class ScheduledTrigger {
   ) {}
 
   start() {
-    this.syncTargets().catch((err) => {
-      this.ctx
-        .logger('spark')
-        .warn(`Scheduled target sync failed: ${err instanceof Error ? err.message : String(err)}`)
-    })
+    this.runSync('Scheduled target sync')
     this._disposeTargets = this.ctx.on('spark/targets-updated', async () => {
-      await this.syncTargets()
+      await this.runSync('Scheduled target refresh')
     })
 
     if (this.config.enabled && this.config.tasks?.length) {
@@ -54,16 +48,15 @@ export class ScheduledTrigger {
       }
     }
 
-    const tasks = (await this.sparkService.trigger.listSparkTasks()).filter(
-      (task) => task.providerKind === 'cron' && getSparkParams(task)?.sparkOrigin === 'scheduled'
-    )
+    const tasks = (await this.sparkService.trigger.listSparkTasks()).filter((task) => {
+      const config = getSparkConfig(task)
+      return config?.mode === 'cron' && config.origin === 'scheduled'
+    })
 
     for (const task of tasks) {
-      const configKey = getSparkParams(task)?.configKey
+      const configKey = getSparkConfig(task)?.configKey
       if (configKey && activeConfigKeys.has(configKey)) continue
-      if (task.enabled) {
-        await this.ctx.chatluna_agent.trigger.setEnabled(task.id, false)
-      }
+      if (task.enabled) await this.sparkService.trigger.setSparkTaskEnabled(task.id, false)
     }
   }
 
@@ -78,42 +71,30 @@ export class ScheduledTrigger {
       return
     }
 
-    const existing = await this.sparkService.trigger.findSparkTaskByConfigKey(
-      target.bindingKey,
-      configKey
-    )
-    const params = {
-      spark: true,
-      sparkType: 'scheduled',
-      sparkOrigin: 'scheduled',
-      sparkContent: task.prompt,
-      targetKey: target.key,
-      configKey,
-      expression,
-      missedRunPolicy: 'skip'
-    }
-    const wakeupTemplate = {
-      message: buildTriggerMessage(this.mainConfig.triggerTemplate, task.prompt),
-      replyTo: 'channel',
-      execMode: 'chain',
-      newConversation: false
-    }
-
+    const existing = await this.sparkService.trigger.findSparkTaskByConfigKey(target.key, configKey)
     if (existing) {
-      await this.ctx.chatluna_agent.trigger.updateTask(existing.id, {
+      const current = getSparkConfig(existing)
+      if (!current) return
+      const config: SparkProviderConfig = {
+        mode: 'cron',
+        expression,
+        timezone: this.mainConfig.timezone,
+        sparkType: 'scheduled',
+        origin: 'scheduled',
+        content: task.prompt,
+        createdBy: 'plugin:chatluna-spark',
+        autoCancelOnUserMessage: false,
+        autoDeleteAfterFire: false,
+        targetKey: target.key,
+        configKey
+      }
+      await this.sparkService.trigger.updateSparkTask(existing, {
         enabled: true,
         name: `Spark scheduled: ${task.name} (${target.name})`,
-        bindingKey: target.bindingKey,
-        platform: target.routing.platform,
-        selfId: target.routing.selfId,
-        userId: target.routing.userId,
-        username: target.routing.username ?? null,
-        guildId: target.routing.guildId ?? null,
-        channelId: target.routing.channelId ?? null,
-        isDirect: target.routing.isDirect,
-        params,
-        wakeupTemplate
-      } as Partial<TriggerTask>)
+        config,
+        content: task.prompt,
+        routing: target.routing
+      })
       return
     }
 
@@ -122,11 +103,10 @@ export class ScheduledTrigger {
       content: task.prompt,
       expression,
       name: `Spark scheduled: ${task.name} (${target.name})`,
-      createdBy: 'spark',
-      bindingKey: target.bindingKey,
+      createdBy: 'plugin:chatluna-spark',
+      bindingKey: target.key,
       metadata: {
         sparkOrigin: 'scheduled',
-        targetKey: target.key,
         configKey
       }
     })
@@ -134,6 +114,16 @@ export class ScheduledTrigger {
 
   private getConfigKey(target: SparkTargetEntry, task: ScheduledTaskConfig) {
     return `scheduled:${target.key}:${task.name}:${task.time}`
+  }
+
+  private async runSync(label: string) {
+    try {
+      await this.syncTargets()
+    } catch (err) {
+      this.ctx
+        .logger('spark')
+        .warn(`${label} failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 }
 
