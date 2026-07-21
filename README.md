@@ -81,18 +81,30 @@ Character 自带空闲触发与 Spark 主动聊天相互独立。Spark 使用本
 
 ## 命令
 
-| 命令                                    | 说明                                                 |
-| --------------------------------------- | ---------------------------------------------------- |
-| `spark.list`                            | 查看当前用户可管理的 ChatLuna 任务                   |
-| `spark.cancel <id>`                     | 取消 ChatLuna 任务                                   |
-| `spark.fire <id>`                       | 立即触发 ChatLuna 任务                               |
-| `spark.stats`                           | 查看 ChatLuna 任务统计（管理员）                     |
-| `spark.target.list`                     | 列出 target                                          |
-| `spark.target.remove <id>`              | 删除 target                                          |
-| `spark.target.enable <id>`              | 启用 target                                          |
-| `spark.target.disable <id>`             | 停用 target                                          |
-| `spark.target.rename <id> <name>`       | 重命名 target                                        |
-| `spark.target.features <id> [features]` | 设置 `festival scheduled proactive`、`all` 或 `none` |
+### 任务命令
+
+| 命令                | 说明                                      |
+| ------------------- | ----------------------------------------- |
+| `spark.list`        | 查看当前用户可管理的 ChatLuna 任务及 ID   |
+| `spark.cancel <id>` | 按任务 ID 取消提醒、跟进或其他 Spark 任务 |
+| `spark.fire <id>`   | 按任务 ID 立即触发任务                    |
+| `spark.stats`       | 查看全部 Spark 任务统计（管理员）         |
+
+### Target 命令
+
+| 命令                                    | 说明                             |
+| --------------------------------------- | -------------------------------- |
+| `spark.target.add [名称]`               | 将当前会话加入 ChatLuna target   |
+| `spark.target.add --character [名称]`   | 将当前会话加入 Character target  |
+| `spark.target.add --personal [名称]`    | 仅绑定当前 ChatLuna 群聊中的个人 |
+| `spark.target.list`                     | 列出 target 及 ID                |
+| `spark.target.remove <id>`              | 删除 target                      |
+| `spark.target.enable <id>`              | 启用 target                      |
+| `spark.target.disable <id>`             | 停用 target                      |
+| `spark.target.rename <id> <名称>`       | 重命名 target                    |
+| `spark.target.features <id> [features]` | 查看或设置 target 功能           |
+
+`features` 可填写 `festival`、`scheduled`、`proactive`，多个功能用空格或逗号分隔；也可使用 `all` 或 `none`。
 
 Character target 的 features 可设置为 `festival`、`proactive` 或 `none`，不支持 `scheduled`。`spark.target.*` 需要管理员权限。
 
