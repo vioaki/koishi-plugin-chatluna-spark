@@ -1,13 +1,9 @@
-import { StructuredTool, type ToolRunnableConfig, type ToolSchemaBase } from '@langchain/core/tools'
+import { StructuredTool, type ToolSchemaBase } from '@langchain/core/tools'
 import { z } from 'zod'
-import type { Context, Session } from 'koishi'
+import type { Context } from 'koishi'
+import type { ChatLunaToolRunnable } from 'koishi-plugin-chatluna/lib/llm-core/platform/types'
 import { SparkTriggerAdapter } from '../service/trigger_adapter'
 import { parseTime } from '../utils/time_parser'
-
-interface SparkToolRunConfig {
-  session?: Session
-  userId?: string
-}
 
 const scheduleSchema = z.object({
   type: z
@@ -46,9 +42,21 @@ export function registerSparkScheduleTool(ctx: Context, adapter: SparkTriggerAda
       'Create a future proactive Spark trigger. The assistant may call this on its own initiative when a future message would help, even without an explicit user request. Use reminder for definite future reminders, greetings, encouragement, care, or remembered facts to bring up later. Use follow_up only for optional later continuations that should be cancelled if the user replies first.'
     schema: ToolSchemaBase = scheduleSchema as unknown as ToolSchemaBase
 
-    async _call(input: SparkScheduleInput, _runManager?: unknown, runConfig?: ToolRunnableConfig) {
-      const configurable = getSparkToolConfig(runConfig)
+    async _call(
+      input: SparkScheduleInput,
+      _runManager?: unknown,
+      runConfig?: ChatLunaToolRunnable
+    ) {
+      const configurable = runConfig?.configurable
       const session = configurable?.session
+
+      if (configurable?.source === 'character') {
+        return JSON.stringify({
+          success: false,
+          error: 'unsupported_source',
+          message: 'spark_schedule is only available in ChatLuna.'
+        })
+      }
 
       if (!session?.bot) {
         return JSON.stringify({
@@ -74,7 +82,7 @@ export function registerSparkScheduleTool(ctx: Context, adapter: SparkTriggerAda
           content: input.content,
           fireAt: parsed.date,
           session,
-          createdBy: session.userId ?? configurable.userId ?? 'spark',
+          createdBy: session.userId ?? configurable?.userId ?? 'spark',
           autoCancelOnUserMessage,
           replyTo: input.replyTo,
           metadata: {
@@ -118,8 +126,4 @@ export function registerSparkScheduleTool(ctx: Context, adapter: SparkTriggerAda
   })
 
   ctx.on('dispose', dispose)
-}
-
-function getSparkToolConfig(runConfig?: ToolRunnableConfig): SparkToolRunConfig {
-  return (runConfig?.configurable ?? {}) as SparkToolRunConfig
 }

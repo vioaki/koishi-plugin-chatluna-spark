@@ -1,3 +1,5 @@
+const { attachSparkMetadata } = require('../lib/service/task_metadata')
+
 function mockLogger(records = []) {
   return {
     debug(message) {
@@ -67,10 +69,16 @@ function createSession(overrides = {}) {
 function createTarget(overrides = {}) {
   const type = overrides.type ?? 'direct'
   const isDirect = type === 'direct'
+  const engine = overrides.engine ?? 'chatluna'
+  const defaultKey = isDirect
+    ? 'personal:sandbox:koishi:direct:user-a'
+    : 'shared:sandbox:koishi:guild-a'
+  const key = overrides.key ?? (engine === 'character' ? `character:${defaultKey}` : defaultKey)
   return {
     id: overrides.id ?? 'db:1',
     numericId: overrides.numericId,
     name: overrides.name ?? '测试目标',
+    engine,
     enabled: overrides.enabled ?? true,
     platform: overrides.platform ?? 'sandbox',
     selfId: overrides.selfId ?? 'koishi',
@@ -79,14 +87,11 @@ function createTarget(overrides = {}) {
     guildId: overrides.guildId,
     channelId: overrides.channelId ?? (isDirect ? 'private:user-a' : 'channel-a'),
     scope: overrides.scope ?? (isDirect ? 'personal' : 'shared'),
-    features: overrides.features ?? ['festival', 'scheduled', 'proactive'],
-    key:
-      overrides.key ??
-      (isDirect ? 'personal:sandbox:koishi:direct:user-a' : 'shared:sandbox:koishi:guild-a'),
-    bindingKey:
-      overrides.bindingKey ??
-      overrides.key ??
-      (isDirect ? 'personal:sandbox:koishi:direct:user-a' : 'shared:sandbox:koishi:guild-a'),
+    features:
+      overrides.features ??
+      (engine === 'character' ? ['festival'] : ['festival', 'scheduled', 'proactive']),
+    key,
+    bindingKey: overrides.bindingKey ?? key,
     routing: overrides.routing ?? {
       platform: overrides.platform ?? 'sandbox',
       selfId: overrides.selfId ?? 'koishi',
@@ -98,11 +103,8 @@ function createTarget(overrides = {}) {
   }
 }
 
-function createProviderConfig(overrides = {}) {
+function createTaskMetadata(overrides = {}) {
   const base = {
-    mode: 'once',
-    at: new Date(Date.now() + 60_000).toISOString(),
-    timezone: 'Asia/Shanghai',
     sparkType: 'reminder',
     origin: 'tool',
     content: '喝水',
@@ -111,15 +113,20 @@ function createProviderConfig(overrides = {}) {
     autoDeleteAfterFire: true,
     targetKey: 'personal:sandbox:koishi:direct:user-a'
   }
-  const config = { ...base, ...overrides }
-  if (config.mode === 'cron') {
-    delete config.at
-    delete config.festivalName
-    delete config.festivalDate
-  } else if (config.mode === 'festival') {
-    delete config.expression
-  } else {
-    delete config.expression
+  return { ...base, ...overrides }
+}
+
+function createLegacyProviderConfig(overrides = {}) {
+  const config = {
+    ...createTaskMetadata(),
+    mode: 'once',
+    at: new Date(Date.now() + 60_000).toISOString(),
+    timezone: 'Asia/Shanghai',
+    ...overrides
+  }
+  if (config.mode === 'cron') delete config.at
+  if (config.mode !== 'cron') delete config.expression
+  if (config.mode !== 'festival') {
     delete config.festivalName
     delete config.festivalDate
   }
@@ -127,16 +134,13 @@ function createProviderConfig(overrides = {}) {
 }
 
 function createTask(overrides = {}) {
-  const config = overrides.config ?? createProviderConfig()
-  return {
+  const metadata = overrides.metadata ?? createTaskMetadata()
+  const defaultAt = new Date(Date.now() + 60_000).toISOString()
+  const task = {
     id: overrides.id ?? 1,
     name: overrides.name ?? 'Spark reminder: 喝水',
     enabled: overrides.enabled ?? true,
-    condition: overrides.condition ?? {
-      type: 'extension',
-      provider: 'chatluna-spark',
-      config
-    },
+    condition: overrides.condition ?? { type: 'once', at: defaultAt },
     execution: overrides.execution ?? {
       model: { type: 'default' },
       conversation: { type: 'route' },
@@ -152,13 +156,14 @@ function createTask(overrides = {}) {
     },
     state: overrides.state ?? {
       status: 'waiting',
-      nextRunAt: config.at ?? new Date(Date.now() + 60_000).toISOString(),
+      nextRunAt: overrides.condition?.at ?? defaultAt,
       runCount: 0
     },
     ownerKey: overrides.ownerKey ?? 'sandbox:koishi:user-a',
     createdAt: overrides.createdAt ?? new Date(),
     updatedAt: overrides.updatedAt ?? new Date()
   }
+  return overrides.attachMetadata === false ? task : attachSparkMetadata(task, metadata)
 }
 
 module.exports = {
@@ -166,6 +171,7 @@ module.exports = {
   createMemoryDatabase,
   createSession,
   createTarget,
-  createProviderConfig,
+  createTaskMetadata,
+  createLegacyProviderConfig,
   createTask
 }

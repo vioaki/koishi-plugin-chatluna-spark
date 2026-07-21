@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-chatluna-spark",
-  "description": "为 ChatLuna 添加主动对话能力的 Koishi 插件，基于 ChatLuna Agent Trigger 支持定时提醒、跟进、节日问候、主动聊天等功能",
-  "version": "0.5.0",
+  "description": "为 ChatLuna 添加提醒、跟进、定时任务、节日问候和主动聊天，并为 Character 补充节日问候",
+  "version": "1.5.0",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -31,13 +31,16 @@
   },
   "koishi": {
     "description": {
-      "zh": "为 ChatLuna 添加主动对话能力，基于 ChatLuna Agent Trigger 支持定时提醒、跟进、节日问候、主动聊天等功能"
+      "zh": "为 ChatLuna 添加提醒、跟进、定时任务、节日问候和主动聊天，并为 Character 补充节日问候"
     },
     "service": {
       "required": [
         "database",
         "chatluna",
         "chatluna_agent"
+      ],
+      "optional": [
+        "chatluna_character_trigger"
       ]
     }
   },
@@ -57,21 +60,27 @@
   },
   "dependencies": {
     "@langchain/core": "^0.3.80",
-    "cron-parser": "5.4.0",
     "zod": "3.25.76"
   },
   "peerDependencies": {
     "koishi": "^4.18.9",
     "koishi-plugin-chatluna": ">=1.4.0-alpha.40 <2.0.0",
-    "koishi-plugin-chatluna-agent": ">=1.0.41 <2.0.0"
+    "koishi-plugin-chatluna-agent": ">=1.0.41 <2.0.0",
+    "koishi-plugin-chatluna-character": ">=0.0.230 <0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "koishi-plugin-chatluna-character": {
+      "optional": true
+    }
   },
   "devDependencies": {
+    "@types/node": "^20.0.0",
     "koishi": "^4.18.9",
     "koishi-plugin-chatluna": "1.4.0-alpha.41",
     "koishi-plugin-chatluna-agent": "1.0.41",
+    "koishi-plugin-chatluna-character": "0.0.230",
     "prettier": "^3.6.2",
-    "typescript": "^5.0.0",
-    "@types/node": "^20.0.0"
+    "typescript": "^5.0.0"
   },
   "overrides": {
     "langsmith": "0.6.0",

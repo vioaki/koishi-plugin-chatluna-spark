@@ -1,8 +1,9 @@
 import { Context } from 'koishi'
 import { Config, ScheduledConfig, ScheduledTaskConfig } from '../config'
 import { SparkService } from '../service'
+import { getSparkMetadata } from '../service/task_metadata'
 import { SparkTargetEntry } from '../service/targets'
-import { getSparkConfig, type SparkProviderConfig } from '../utils/params'
+import type { SparkTaskMetadata } from '../types'
 
 export class ScheduledTrigger {
   private _disposeTargets?: () => void
@@ -36,7 +37,9 @@ export class ScheduledTrigger {
     const configuredTasks = this.config.enabled ? (this.config.tasks ?? []) : []
     const targets =
       configuredTasks.length > 0
-        ? await this.sparkService.targets.listRuntimeTargets('scheduled')
+        ? (await this.sparkService.targets.listRuntimeTargets('scheduled')).filter(
+            (target) => target.engine === 'chatluna'
+          )
         : []
     const activeConfigKeys = new Set<string>()
 
@@ -44,17 +47,24 @@ export class ScheduledTrigger {
       for (const task of configuredTasks) {
         const configKey = this.getConfigKey(target, task)
         activeConfigKeys.add(configKey)
-        await this.syncTargetTask(target, task, configKey)
+        try {
+          await this.syncTargetTask(target, task, configKey)
+        } catch (err) {
+          this.ctx
+            .logger('spark')
+            .warn(
+              `Scheduled task sync failed for ${target.id}/${task.name}: ${err instanceof Error ? err.message : String(err)}`
+            )
+        }
       }
     }
 
     const tasks = (await this.sparkService.trigger.listSparkTasks()).filter((task) => {
-      const config = getSparkConfig(task)
-      return config?.mode === 'cron' && config.origin === 'scheduled'
+      return getSparkMetadata(task)?.origin === 'scheduled'
     })
 
     for (const task of tasks) {
-      const configKey = getSparkConfig(task)?.configKey
+      const configKey = getSparkMetadata(task)?.configKey
       if (configKey && activeConfigKeys.has(configKey)) continue
       if (task.enabled) await this.sparkService.trigger.setSparkTaskEnabled(task.id, false)
     }
@@ -73,12 +83,7 @@ export class ScheduledTrigger {
 
     const existing = await this.sparkService.trigger.findSparkTaskByConfigKey(target.key, configKey)
     if (existing) {
-      const current = getSparkConfig(existing)
-      if (!current) return
-      const config: SparkProviderConfig = {
-        mode: 'cron',
-        expression,
-        timezone: this.mainConfig.timezone,
+      const metadata: SparkTaskMetadata = {
         sparkType: 'scheduled',
         origin: 'scheduled',
         content: task.prompt,
@@ -91,7 +96,13 @@ export class ScheduledTrigger {
       await this.sparkService.trigger.updateSparkTask(existing, {
         enabled: true,
         name: `Spark scheduled: ${task.name} (${target.name})`,
-        config,
+        condition: {
+          type: 'cron',
+          expression,
+          timezone: this.mainConfig.timezone,
+          misfire: 'skip'
+        },
+        metadata,
         content: task.prompt,
         routing: target.routing
       })

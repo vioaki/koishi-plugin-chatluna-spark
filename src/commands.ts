@@ -1,16 +1,16 @@
 import { Context, Session } from 'koishi'
 import type { TriggerTask } from 'koishi-plugin-chatluna-agent'
 import { SparkService } from './service'
-import { SparkTargetFeature } from './types'
-import { getSparkConfig } from './utils/params'
+import { getSparkMetadata } from './service/task_metadata'
+import { SparkEngine, SparkTargetFeature } from './types'
 
 export function registerTaskCommands(ctx: Context, sparkService: SparkService) {
   const isAdmin = (session: Session) => hasAdminAuthority(session)
   const isTaskOwner = (task: TriggerTask, session: Session) => {
-    const config = getSparkConfig(task)
+    const metadata = getSparkMetadata(task)
     return (
       task.ownerKey === `${session.platform}:${session.selfId}:${session.userId}` ||
-      config?.createdBy === session.userId
+      metadata?.createdBy === session.userId
     )
   }
 
@@ -28,10 +28,10 @@ export function registerTaskCommands(ctx: Context, sparkService: SparkService) {
       return tasks
         .slice(0, 20)
         .map((task, index) => {
-          const config = getSparkConfig(task)
+          const metadata = getSparkMetadata(task)
           const next = task.state.nextRunAt ? formatTime(task.state.nextRunAt) : '被动/无下次触发'
-          const type = config?.sparkType ?? 'unknown'
-          const content = config?.content ?? task.name
+          const type = metadata?.sparkType ?? 'unknown'
+          const content = metadata?.content ?? task.name
           return `${index + 1}. [ID:${task.id}] ${type} ${next}\n   ${content}`
         })
         .join('\n\n')
@@ -85,7 +85,7 @@ export function registerTaskCommands(ctx: Context, sparkService: SparkService) {
       const tasks = await sparkService.trigger.listSparkTasks(session)
       const byType: Record<string, number> = {}
       for (const task of tasks) {
-        const type = getSparkConfig(task)?.sparkType ?? 'unknown'
+        const type = getSparkMetadata(task)?.sparkType ?? 'unknown'
         byType[type] = (byType[type] ?? 0) + 1
       }
 
@@ -106,8 +106,9 @@ export function registerTargetCommands(ctx: Context, sparkService: SparkService)
   }
 
   ctx
-    .command('spark.target.add [name:text]', '将当前会话加入 Spark 主动目标白名单')
+    .command('spark.target.add [name:text]', '将当前会话加入 Spark target')
     .option('personal', '--personal')
+    .option('character', '--character')
     .userFields(['authority'])
     .action(async ({ session, options }, name) => {
       const denied = requireAdmin(session)
@@ -116,15 +117,28 @@ export function registerTargetCommands(ctx: Context, sparkService: SparkService)
         return '当前会话缺少 platform/selfId/userId，无法注册目标'
       }
 
-      const target = await sparkService.targets.addFromSession(session, name, {
-        personal: options?.personal
-      })
+      const engine: SparkEngine = options?.character ? 'character' : 'chatluna'
+      if (engine === 'character' && !sparkService.characterFestival) {
+        return 'Character 节日问候不可用，请先安装并启用 koishi-plugin-chatluna-character >= 0.0.230'
+      }
+
+      let target
+      try {
+        target = await sparkService.targets.addFromSession(session, name, {
+          personal: options?.personal,
+          engine
+        })
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err)
+      }
       await refreshTargets()
-      return `已加入 Spark target：${formatTarget(target)}`
+      return engine === 'character'
+        ? `已加入 Character 节日问候 target：${formatTarget(target)}`
+        : `已加入 Spark target：${formatTarget(target)}`
     })
 
   ctx
-    .command('spark.target.list', '查看 Spark 主动目标白名单')
+    .command('spark.target.list', '查看 Spark target')
     .userFields(['authority'])
     .action(async ({ session }) => {
       const denied = requireAdmin(session)
@@ -229,6 +243,9 @@ export function registerTargetCommands(ctx: Context, sparkService: SparkService)
       if (!features) {
         return `功能只能是 ${SPARK_TARGET_FEATURES_TEXT}，多个功能用空格或逗号分隔；也可使用 all 或 none`
       }
+      if (current.engine === 'character' && features.some((feature) => feature !== 'festival')) {
+        return 'Character target 仅支持 festival；可设置 festival 或 none'
+      }
 
       const target = await sparkService.targets.setDatabaseTargetFeatures(databaseId, features)
       await refreshTargets()
@@ -256,6 +273,7 @@ function formatTarget(target: {
   id: string
   name: string
   enabled: boolean
+  engine: SparkEngine
   platform: string
   selfId: string
   type: string
@@ -269,7 +287,8 @@ function formatTarget(target: {
     target.type === 'direct'
       ? `user=${target.userId}`
       : `guild=${target.guildId ?? '-'} channel=${target.channelId ?? '-'} user=${target.userId}`
-  return `[${target.id}] ${target.enabled ? '启用' : '停用'} ${target.name} ${target.platform}/${target.selfId} ${target.type}/${target.scope} ${targetId} features=${formatFeatures(target.features)}`
+  const targetKind = target.engine === 'character' ? 'Character' : 'ChatLuna'
+  return `[${target.id}] ${target.enabled ? '启用' : '停用'} ${target.name} ${targetKind} ${target.platform}/${target.selfId} ${target.type}/${target.scope} ${targetId} features=${formatFeatures(target.features)}`
 }
 
 function formatFeatures(features: SparkTargetFeature[]) {

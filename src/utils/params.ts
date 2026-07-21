@@ -1,10 +1,11 @@
 import type { TriggerTask } from 'koishi-plugin-chatluna-agent'
 import { z } from 'zod'
+import type { SparkTaskMetadata } from '../types'
 
-export const SPARK_TRIGGER_PROVIDER_ID = 'chatluna-spark'
+export const LEGACY_SPARK_TRIGGER_PROVIDER_ID = 'chatluna-spark'
+export const LEGACY_SPARK_PROVIDER_REMOVAL_ERROR = `Unknown trigger provider: ${LEGACY_SPARK_TRIGGER_PROVIDER_ID}`
 
-const commonConfigShape = {
-  timezone: z.string().min(1),
+const metadataShape = {
   sparkType: z.enum(['reminder', 'follow_up', 'scheduled', 'festival', 'proactive']),
   origin: z.enum(['tool', 'xml', 'scheduled', 'festival', 'proactive']),
   content: z.string().min(1),
@@ -15,43 +16,65 @@ const commonConfigShape = {
   configKey: z.string().min(1).optional()
 }
 
-export const sparkProviderConfigSchema = z.discriminatedUnion('mode', [
+export const sparkTaskMetadataSchema = z.object(metadataShape).strict()
+
+export const legacySparkProviderConfigSchema = z.discriminatedUnion('mode', [
   z
     .object({
-      ...commonConfigShape,
+      ...metadataShape,
       mode: z.literal('once'),
-      at: z.string().datetime({ offset: true })
+      at: z.string().datetime({ offset: true }),
+      timezone: z.string().min(1)
     })
     .strict(),
   z
     .object({
-      ...commonConfigShape,
+      ...metadataShape,
       mode: z.literal('cron'),
-      expression: z.string().min(1)
+      expression: z.string().min(1),
+      timezone: z.string().min(1)
     })
     .strict(),
   z
     .object({
-      ...commonConfigShape,
+      ...metadataShape,
       mode: z.literal('festival'),
       at: z.string().datetime({ offset: true }),
+      timezone: z.string().min(1),
       festivalName: z.string().min(1),
       festivalDate: z.string().min(1)
     })
     .strict()
 ])
 
-export type SparkProviderConfig = z.infer<typeof sparkProviderConfigSchema>
+export type LegacySparkProviderConfig = z.infer<typeof legacySparkProviderConfigSchema>
 
-export function getSparkConfig(task: Pick<TriggerTask, 'condition'>): SparkProviderConfig | null {
+export function getLegacySparkConfig(
+  task: Pick<TriggerTask, 'condition'>
+): LegacySparkProviderConfig | null {
   if (
-    !task.condition ||
     task.condition.type !== 'extension' ||
-    task.condition.provider !== SPARK_TRIGGER_PROVIDER_ID
+    task.condition.provider !== LEGACY_SPARK_TRIGGER_PROVIDER_ID
   ) {
     return null
   }
-
-  const parsed = sparkProviderConfigSchema.safeParse(task.condition.config)
+  const parsed = legacySparkProviderConfigSchema.safeParse(task.condition.config)
   return parsed.success ? parsed.data : null
+}
+
+export function metadataFromLegacy(config: LegacySparkProviderConfig): SparkTaskMetadata {
+  return {
+    sparkType: config.sparkType,
+    origin: config.origin,
+    content: config.content,
+    createdBy: config.createdBy,
+    autoCancelOnUserMessage: config.autoCancelOnUserMessage,
+    autoDeleteAfterFire: config.autoDeleteAfterFire,
+    ...(config.targetKey ? { targetKey: config.targetKey } : {}),
+    ...(config.configKey ? { configKey: config.configKey } : {})
+  }
+}
+
+export function hasLegacyProviderRemovalError(task: Pick<TriggerTask, 'state'>) {
+  return task.state.lastError === LEGACY_SPARK_PROVIDER_REMOVAL_ERROR
 }

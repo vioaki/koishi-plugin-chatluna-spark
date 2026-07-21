@@ -53,19 +53,19 @@ export const Config = Schema.intersect([
     mode: Schema.union(['tool', 'xml', 'both'])
       .default('tool')
       .description(
-        '任务创建模式。tool：注册 spark_schedule；xml：解析 XML 标签；both：两者都启用。'
+        'ChatLuna 任务创建模式。tool：注册 spark_schedule；xml：解析 XML 标签；both：两者都启用。'
       ),
     timezone: Schema.string()
       .default('Asia/Shanghai')
-      .description('定时任务和节日问候使用的 IANA 时区。'),
+      .description('定时任务、节日问候和主动聊天休息时段使用的 IANA 时区。'),
     triggerTemplate: Schema.string()
       .role('textarea')
       .default('[系统提示：现在是提醒时间，请根据以下内容主动向用户发起对话] {content}')
-      .description('Agent Trigger 唤醒消息模板。{content} 会被替换为任务内容。'),
+      .description('Spark 唤醒消息模板。{content} 会被替换为任务内容。'),
     autoDeleteExecutedAiTriggers: Schema.boolean()
       .default(true)
       .description(
-        'AI 通过 tool/XML 创建的一次性触发器成功执行后自动从 Agent Trigger 中删除；不影响 WebUI 人工任务、节日祝福和配置定时任务。'
+        'AI 通过 tool/XML 创建的一次性任务成功执行后自动删除；不影响节日问候和配置定时任务。'
       )
   }).description('基础配置'),
 
@@ -98,7 +98,7 @@ export const Config = Schema.intersect([
       custom: Schema.array(
         Schema.object({
           name: Schema.string().required().description('节日名称'),
-          date: Schema.string().required().description('日期（格式：MM-DD，例如 03-15）'),
+          date: Schema.string().required().description('日期（MM-DD 或 MMDD，例如 03-15）'),
           time: Schema.string().default('09:00').description('触发时间（格式：HH:mm）'),
           description: Schema.string().required().description('节日描述')
         })

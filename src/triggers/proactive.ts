@@ -67,7 +67,9 @@ export class ProactiveTrigger {
   }
 
   async refreshTargets() {
-    const targets = await this.sparkService.targets.listRuntimeTargets('proactive')
+    const targets = (await this.sparkService.targets.listRuntimeTargets('proactive')).filter(
+      (target) => target.engine === 'chatluna'
+    )
     const active = new Set(targets.map((target) => target.key))
     const now = Date.now()
 
@@ -105,15 +107,12 @@ export class ProactiveTrigger {
   }
 
   private isInSleepTime(): boolean {
-    const now = new Date()
-    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
-    const { sleepStart, sleepEnd } = this.config
-
-    if (sleepStart > sleepEnd) {
-      return currentTime >= sleepStart || currentTime < sleepEnd
-    }
-
-    return currentTime >= sleepStart && currentTime < sleepEnd
+    return isTimeInWindow(
+      new Date(),
+      this.config.sleepStart,
+      this.config.sleepEnd,
+      this.mainConfig.timezone
+    )
   }
 
   async checkAndTrigger() {
@@ -145,6 +144,12 @@ export class ProactiveTrigger {
         if (result.ok) {
           state.lastChatTime = now
           state.currentProbability = 0
+        } else {
+          this.ctx
+            .logger('spark')
+            .warn(
+              `Proactive wakeup failed for ${state.target.id}: ${result.error ?? 'unknown error'}`
+            )
         }
       } catch (err) {
         this.ctx
@@ -153,4 +158,35 @@ export class ProactiveTrigger {
       }
     }
   }
+}
+
+export function isTimeInWindow(date: Date, start: string, end: string, timezone: string) {
+  if (!isClockTime(start) || !isClockTime(end) || start === end) return false
+  const current = getTimeInZone(date, timezone)
+  if (!current) return false
+
+  if (start > end) {
+    return current >= start || current < end
+  }
+  return current >= start && current < end
+}
+
+function getTimeInZone(date: Date, timezone: string) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(date)
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+    return `${values.hour}:${values.minute}`
+  } catch {
+    return null
+  }
+}
+
+function isClockTime(value: string) {
+  const match = value.match(/^(\d{2}):(\d{2})$/)
+  return match != null && Number(match[1]) <= 23 && Number(match[2]) <= 59
 }

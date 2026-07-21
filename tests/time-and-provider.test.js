@@ -3,9 +3,8 @@ const assert = require('node:assert/strict')
 
 const { parseTime } = require('../lib/utils/time_parser')
 const { parseSparkTags, TagParser } = require('../lib/parser/tag_parser')
-const { nextSparkOccurrence } = require('../lib/service/trigger_provider')
 const { toFestivalFireAt } = require('../lib/triggers/festival')
-const { mockLogger, createSession, createProviderConfig } = require('./helpers')
+const { mockLogger, createSession } = require('./helpers')
 
 test('parseTime accepts relative time and rejects invalid calendar values', () => {
   const before = Date.now()
@@ -46,40 +45,6 @@ test('XML parser creates reminders and strips control tags', async () => {
   assert.equal(invalid.failures[0].reason, 'invalid_time')
 })
 
-test('Spark provider computes once, cron, and festival occurrences', () => {
-  const after = new Date('2026-06-08T00:00:00.000Z')
-  const onceAt = new Date('2026-06-08T01:00:00.000Z')
-  const once = nextSparkOccurrence(createProviderConfig({ at: onceAt.toISOString() }), after)
-  assert.equal(once.at.toISOString(), onceAt.toISOString())
-  assert.equal(nextSparkOccurrence(createProviderConfig({ at: after.toISOString() }), after), null)
-
-  const cron = nextSparkOccurrence(
-    createProviderConfig({
-      mode: 'cron',
-      expression: '0 9 * * *',
-      origin: 'scheduled',
-      sparkType: 'scheduled',
-      autoDeleteAfterFire: false
-    }),
-    after
-  )
-  assert.equal(cron.at.toISOString(), '2026-06-08T01:00:00.000Z')
-
-  const festival = nextSparkOccurrence(
-    createProviderConfig({
-      mode: 'festival',
-      at: onceAt.toISOString(),
-      origin: 'festival',
-      sparkType: 'festival',
-      autoDeleteAfterFire: false,
-      festivalName: '测试节日',
-      festivalDate: '2026-06-08'
-    }),
-    after
-  )
-  assert.equal(festival.periodKey, '2026-06-08')
-})
-
 test('festival time conversion uses the configured timezone and rejects invalid dates', () => {
   const festival = {
     name: '测试节日',
@@ -91,6 +56,16 @@ test('festival time conversion uses the configured timezone and rejects invalid 
   const after = new Date('2026-06-08T00:00:00.000Z')
   const fireAt = toFestivalFireAt(festival, 2026, after, false, 'Asia/Shanghai')
   assert.equal(fireAt.toISOString(), '2026-06-09T01:00:00.000Z')
+  assert.equal(
+    toFestivalFireAt(
+      { ...festival, date: '0609' },
+      2026,
+      after,
+      false,
+      'Asia/Shanghai'
+    ).toISOString(),
+    '2026-06-09T01:00:00.000Z'
+  )
   assert.equal(
     toFestivalFireAt({ ...festival, date: '02-31' }, 2026, after, false, 'Asia/Shanghai'),
     null

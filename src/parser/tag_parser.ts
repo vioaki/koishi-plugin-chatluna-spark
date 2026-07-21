@@ -81,7 +81,7 @@ export function parseSparkTags(text: string): SparkTagParseResult {
 export class TagParser {
   constructor(
     private ctx: Context,
-    private adapter: SparkTriggerAdapter
+    private trigger: SparkTriggerAdapter
   ) {}
 
   async parseAndExecute(text: string, session: Session): Promise<SparkTagParseResult> {
@@ -130,7 +130,7 @@ export class TagParser {
       throw new Error('XML Spark tags require a real ChatLuna session')
     }
 
-    return await this.adapter.createOnce({
+    return await this.trigger.createOnce({
       type,
       content: data.message,
       fireAt: data.time,

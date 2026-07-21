@@ -1,4 +1,5 @@
 export type SparkMode = 'tool' | 'xml' | 'both'
+export type SparkEngine = 'chatluna' | 'character'
 
 export type SparkScheduleType = 'reminder' | 'follow_up' | 'scheduled' | 'festival' | 'proactive'
 
@@ -11,6 +12,7 @@ export type SparkTargetScope = 'personal' | 'shared'
 export interface SparkTarget {
   name: string
   enabled: boolean
+  engine: SparkEngine
   platform: string
   selfId: string
   type: SparkTargetType
@@ -42,10 +44,30 @@ export interface SparkTriggerMetadata {
   configKey?: string
 }
 
+export interface SparkTaskMetadata {
+  sparkType: SparkScheduleType
+  origin: SparkTriggerOrigin
+  content: string
+  createdBy: string
+  autoCancelOnUserMessage: boolean
+  autoDeleteAfterFire: boolean
+  targetKey?: string
+  configKey?: string
+}
+
+export interface SparkTaskMetadataRecord extends SparkTaskMetadata {
+  taskId: number
+  targetKey: string
+  configKey: string
+  createdAt: Date
+  updatedAt: Date
+}
+
 // ===== Koishi 模块扩展 =====
 declare module 'koishi' {
   interface Tables {
     chatluna_spark_targets: SparkTargetRecord
+    chatluna_spark_task_meta: SparkTaskMetadataRecord
   }
 
   interface Events {

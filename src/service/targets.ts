@@ -1,6 +1,7 @@
 import { Context, Session } from 'koishi'
 import {
   SparkRouting,
+  SparkEngine,
   SparkTarget,
   SparkTargetFeature,
   SparkTargetRecord,
@@ -20,6 +21,7 @@ export interface SparkTargetEntry extends SparkTarget {
 
 export interface AddTargetOptions {
   personal?: boolean
+  engine?: SparkEngine
 }
 
 export class SparkTargetRegistry {
@@ -63,7 +65,7 @@ export class SparkTargetRegistry {
       await this.ctx.database.set('chatluna_spark_targets', existingDatabase.numericId!, {
         name: target.name || existingDatabase.name,
         enabled: true,
-        features: this.normalizeFeatures(target.features),
+        features: this.normalizeFeatures(target.features, target.engine),
         updatedAt: now
       })
       return (await this.getDatabaseEntry(existingDatabase.numericId!))!
@@ -102,8 +104,10 @@ export class SparkTargetRegistry {
   }
 
   async setDatabaseTargetFeatures(id: number, features: SparkTargetFeature[]) {
+    const target = await this.getDatabaseEntry(id)
+    if (!target) return null
     await this.ctx.database.set('chatluna_spark_targets', id, {
-      features: this.normalizeFeatures(features),
+      features: this.normalizeFeatures(features, target.engine),
       updatedAt: new Date()
     })
     return await this.getDatabaseEntry(id)
@@ -138,13 +142,14 @@ export class SparkTargetRegistry {
   getTargetKey(
     target: Pick<
       SparkTarget,
-      'type' | 'platform' | 'selfId' | 'userId' | 'guildId' | 'channelId' | 'scope'
+      'engine' | 'type' | 'platform' | 'selfId' | 'userId' | 'guildId' | 'channelId' | 'scope'
     >
   ) {
-    return this.getBindingKey(
+    const bindingKey = this.getBindingKey(
       this.routingFromTarget(target),
       target.type === 'direct' ? 'personal' : target.scope
     )
+    return target.engine === 'character' ? `character:${bindingKey}` : bindingKey
   }
 
   getBindingKey(routing: SparkRouting, scope: SparkTargetScope = 'personal') {
@@ -183,8 +188,12 @@ export class SparkTargetRegistry {
       throw new Error('Spark target session requires platform, selfId, and userId')
     }
 
+    const engine = options.engine ?? 'chatluna'
     const isDirect = session.isDirect
     const type: SparkTargetType = isDirect ? 'direct' : 'group'
+    if (engine === 'character' && !isDirect && options.personal) {
+      throw new Error('Character group targets do not support personal scope')
+    }
     const scope: SparkTargetScope = isDirect ? 'personal' : options.personal ? 'personal' : 'shared'
     const userId = session.userId
     const guildId = isDirect ? undefined : (session.guildId ?? session.channelId)
@@ -193,6 +202,7 @@ export class SparkTargetRegistry {
     return {
       name: name?.trim() || this.formatDefaultName(session, scope),
       enabled: true,
+      engine,
       platform: session.platform,
       selfId: session.selfId,
       type,
@@ -200,7 +210,7 @@ export class SparkTargetRegistry {
       guildId,
       channelId,
       scope,
-      features: [...SPARK_TARGET_FEATURES]
+      features: engine === 'character' ? ['festival'] : [...SPARK_TARGET_FEATURES]
     }
   }
 
@@ -240,9 +250,11 @@ export class SparkTargetRegistry {
     const scope: SparkTargetScope =
       type === 'direct' ? 'personal' : target.scope === 'personal' ? 'personal' : 'shared'
 
+    const engine: SparkEngine = target.engine === 'character' ? 'character' : 'chatluna'
     return {
       name: target.name?.trim() || `${target.platform}:${target.userId}`,
       enabled: target.enabled !== false,
+      engine,
       platform: target.platform,
       selfId: target.selfId,
       type,
@@ -250,11 +262,15 @@ export class SparkTargetRegistry {
       guildId: type === 'direct' ? undefined : (target.guildId ?? target.channelId),
       channelId: target.channelId,
       scope,
-      features: this.normalizeFeatures(target.features)
+      features: this.normalizeFeatures(target.features, engine)
     }
   }
 
-  private normalizeFeatures(features: unknown): SparkTargetFeature[] {
+  private normalizeFeatures(features: unknown, engine: SparkEngine): SparkTargetFeature[] {
+    if (engine === 'character') {
+      if (!Array.isArray(features)) return ['festival']
+      return features.includes('festival') ? ['festival'] : []
+    }
     if (!Array.isArray(features)) {
       return [...SPARK_TARGET_FEATURES]
     }
@@ -271,7 +287,7 @@ export class SparkTargetRegistry {
     meta: Pick<SparkTargetEntry, 'id'> & { numericId?: number }
   ): SparkTargetEntry {
     const routing = this.routingFromTarget(target)
-    const bindingKey = this.getBindingKey(routing, target.scope)
+    const bindingKey = this.getTargetKey(target)
     return {
       ...target,
       ...meta,

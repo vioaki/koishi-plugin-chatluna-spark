@@ -3,12 +3,12 @@ const assert = require('node:assert/strict')
 
 const { ScheduledTrigger } = require('../lib/triggers/scheduled')
 const { FestivalTrigger } = require('../lib/triggers/festival')
-const { ProactiveTrigger } = require('../lib/triggers/proactive')
+const { ProactiveTrigger, isTimeInWindow } = require('../lib/triggers/proactive')
 const {
   mockLogger,
   createTarget,
   createTask,
-  createProviderConfig,
+  createTaskMetadata,
   createSession
 } = require('./helpers')
 
@@ -29,15 +29,27 @@ const mainConfig = {
   triggerTemplate: '[系统提示] {content}'
 }
 
+test('proactive sleep window uses the configured timezone instead of server local time', () => {
+  const date = new Date('2026-06-08T15:30:00.000Z')
+
+  assert.equal(isTimeInWindow(date, '23:00', '07:00', 'Asia/Shanghai'), true)
+  assert.equal(isTimeInWindow(date, '23:00', '07:00', 'UTC'), false)
+  assert.equal(isTimeInWindow(date, '00:00', '00:00', 'Asia/Shanghai'), false)
+})
+
 test('scheduled component creates cron tasks and disables stale configuration tasks', async () => {
   const target = createTarget({ features: ['scheduled'] })
   const created = []
   const disabled = []
   const stale = createTask({
     id: 9,
-    config: createProviderConfig({
-      mode: 'cron',
+    condition: {
+      type: 'cron',
       expression: '0 7 * * *',
+      timezone: 'Asia/Shanghai',
+      misfire: 'skip'
+    },
+    metadata: createTaskMetadata({
       sparkType: 'scheduled',
       origin: 'scheduled',
       autoDeleteAfterFire: false,
@@ -55,8 +67,8 @@ test('scheduled component creates cron tasks and disables stale configuration ta
       async findSparkTaskByConfigKey() {
         return undefined
       },
-      async createCron(routing, input) {
-        created.push({ routing, input })
+      async createCron(source, input) {
+        created.push({ source, input })
       },
       async listSparkTasks() {
         return [stale]
@@ -79,15 +91,20 @@ test('scheduled component creates cron tasks and disables stale configuration ta
   assert.equal(created[0].input.expression, '15 8 * * *')
   assert.equal(created[0].input.bindingKey, target.key)
   assert.equal(created[0].input.metadata.sparkOrigin, 'scheduled')
+  assert.deepEqual(created[0].source, target.routing)
   assert.deepEqual(disabled, [[9, false]])
 })
 
-test('scheduled component updates an existing V2 task with complete provider config', async () => {
+test('scheduled component updates an existing task with the built-in cron condition', async () => {
   const target = createTarget({ features: ['scheduled'] })
   const existing = createTask({
-    config: createProviderConfig({
-      mode: 'cron',
+    condition: {
+      type: 'cron',
       expression: '0 7 * * *',
+      timezone: 'Asia/Shanghai',
+      misfire: 'skip'
+    },
+    metadata: createTaskMetadata({
       sparkType: 'scheduled',
       origin: 'scheduled',
       autoDeleteAfterFire: false,
@@ -123,8 +140,12 @@ test('scheduled component updates an existing V2 task with complete provider con
   await trigger.syncTargets()
 
   assert.equal(updates.length, 1)
-  assert.equal(updates[0].input.config.expression, '15 8 * * *')
-  assert.equal(updates[0].input.config.timezone, 'Asia/Shanghai')
+  assert.deepEqual(updates[0].input.condition, {
+    type: 'cron',
+    expression: '15 8 * * *',
+    timezone: 'Asia/Shanghai',
+    misfire: 'skip'
+  })
   assert.equal(updates[0].input.content, '新的早安')
 })
 
@@ -143,8 +164,8 @@ test('festival component keeps one task per target and rolls completed tasks for
       async findSparkTaskByTargetKey() {
         return existing
       },
-      async createFestival(routing, input) {
-        created.push({ routing, input })
+      async createFestival(source, input) {
+        created.push({ source, input })
       },
       async listSparkTasks() {
         return existing ? [existing] : []
@@ -178,8 +199,26 @@ test('festival component keeps one task per target and rolls completed tasks for
 
   await trigger.syncTargets(new Date('2026-06-08T00:00:00.000Z'))
   assert.equal(created.length, 1)
+  assert.deepEqual(created[0].source, target.routing)
   assert.equal(created[0].input.fireAt.toISOString(), '2026-06-09T01:00:00.000Z')
   assert.equal(created[0].input.content, '今天是测试节日：测试描述')
+
+  existing = createTask({
+    state: {
+      status: 'waiting',
+      runCount: 0,
+      nextRunAt: '2026-06-09T01:00:00.000Z'
+    },
+    condition: { type: 'once', at: '2026-06-09T01:00:00.000Z' },
+    metadata: createTaskMetadata({
+      sparkType: 'festival',
+      origin: 'festival',
+      content: '今天是测试节日：测试描述',
+      autoDeleteAfterFire: false
+    })
+  })
+  await trigger.syncTargets(new Date('2026-06-08T00:00:00.000Z'))
+  assert.equal(updates.length, 0)
 
   existing = createTask({
     state: {
@@ -187,31 +226,55 @@ test('festival component keeps one task per target and rolls completed tasks for
       runCount: 1,
       lastRunAt: '2026-06-09T01:00:00.000Z'
     },
-    config: createProviderConfig({
-      mode: 'festival',
-      at: '2026-06-09T01:00:00.000Z',
+    condition: { type: 'once', at: '2026-06-09T01:00:00.000Z' },
+    metadata: createTaskMetadata({
       sparkType: 'festival',
       origin: 'festival',
-      autoDeleteAfterFire: false,
-      festivalName: '测试节日',
-      festivalDate: '2026-06-09'
+      autoDeleteAfterFire: false
     })
   })
-  await trigger.healFestivalTasks(new Date('2027-06-08T00:00:00.000Z'))
+  await trigger.syncTargets(new Date('2027-06-08T00:00:00.000Z'))
   assert.equal(updates.length, 1)
-  assert.equal(updates[0].input.config.festivalDate, '2027-06-09')
+  assert.deepEqual(updates[0].input.condition, {
+    type: 'once',
+    at: '2027-06-09T01:00:00.000Z'
+  })
+  assert.equal(updates[0].input.metadata.origin, 'festival')
 })
 
-test('disabled festival configuration disables existing provider tasks', async () => {
+test('festival component accepts compact custom dates and selects the nearer festival', () => {
+  const trigger = new FestivalTrigger(
+    createComponentContext(),
+    {
+      enabled: true,
+      promptTemplate: '今天是{festivalName}：{festivalDesc}',
+      defaultTime: '09:00',
+      custom: [
+        {
+          name: '测试节',
+          date: '0721',
+          time: '13:40',
+          description: 'test'
+        }
+      ]
+    },
+    {},
+    mainConfig
+  )
+
+  const next = trigger.findNextFestival(new Date('2026-07-21T05:37:00.000Z'))
+  assert.equal(next.festival.name, '测试节')
+  assert.equal(next.festival.date, '07-21')
+  assert.equal(next.fireAt.toISOString(), '2026-07-21T05:40:00.000Z')
+})
+
+test('disabled festival configuration disables existing Spark tasks', async () => {
   const disabled = []
   const existing = createTask({
-    config: createProviderConfig({
-      mode: 'festival',
+    metadata: createTaskMetadata({
       sparkType: 'festival',
       origin: 'festival',
-      autoDeleteAfterFire: false,
-      festivalName: '测试节日',
-      festivalDate: '2026-06-09'
+      autoDeleteAfterFire: false
     })
   })
   const service = {
@@ -240,6 +303,63 @@ test('disabled festival configuration disables existing provider tasks', async (
   assert.deepEqual(disabled, [[existing.id, false]])
 })
 
+test('festival component sends Character targets only to the native festival bridge', async () => {
+  const target = createTarget({
+    numericId: 12,
+    engine: 'character',
+    features: ['festival']
+  })
+  const synced = []
+  const cleaned = []
+  const service = {
+    targets: {
+      async listRuntimeTargets() {
+        return [target]
+      }
+    },
+    trigger: {
+      async listSparkTasks() {
+        return []
+      }
+    },
+    characterFestival: {
+      async syncTarget(value, input) {
+        synced.push({ value, input })
+      },
+      async cleanupTargets(values) {
+        cleaned.push(values)
+      }
+    }
+  }
+  const trigger = new FestivalTrigger(
+    createComponentContext(),
+    {
+      enabled: true,
+      promptTemplate: '今天是{festivalName}：{festivalDesc}',
+      defaultTime: '09:00',
+      custom: []
+    },
+    service,
+    mainConfig
+  )
+  trigger.getFestivalsForYear = () => [
+    {
+      name: '测试节日',
+      date: '06-09',
+      time: '09:00',
+      description: '测试描述',
+      category: 'modern'
+    }
+  ]
+
+  await trigger.syncTargets(new Date('2026-06-08T00:00:00.000Z'))
+
+  assert.equal(synced.length, 1)
+  assert.equal(synced[0].value, target)
+  assert.equal(synced[0].input.festivalDate, '2026-06-09')
+  assert.deepEqual(cleaned, [[target]])
+})
+
 test('proactive component tracks only registered targets and wakes their route', async () => {
   const target = createTarget({
     type: 'group',
@@ -258,8 +378,8 @@ test('proactive component tracks only registered targets and wakes their route',
       }
     },
     trigger: {
-      async wakeup(routing, prompt) {
-        wakeups.push({ routing, prompt })
+      async wakeup(source, prompt) {
+        wakeups.push({ source, prompt })
         return { ok: true }
       }
     }
@@ -289,5 +409,48 @@ test('proactive component tracks only registered targets and wakes their route',
 
   assert.equal(wakeups.length, 1)
   assert.equal(wakeups[0].prompt, '主动问候')
-  assert.deepEqual(wakeups[0].routing, target.routing)
+  assert.deepEqual(wakeups[0].source, target.routing)
+})
+
+test('proactive component ignores Character targets', async () => {
+  const target = createTarget({ engine: 'character', features: ['proactive'] })
+  const wakeups = []
+  const service = {
+    targets: {
+      async listRuntimeTargets() {
+        return [target]
+      },
+      getSessionBindingKeys() {
+        return new Set()
+      }
+    },
+    trigger: {
+      async wakeup(...args) {
+        wakeups.push(args)
+        return { ok: true }
+      }
+    }
+  }
+  const trigger = new ProactiveTrigger(
+    createComponentContext(),
+    {
+      enabled: true,
+      checkInterval: 15,
+      initialDelay: 0,
+      initialProbability: 1,
+      probabilityIncrease: 0,
+      maxProbability: 1,
+      sleepStart: '00:00',
+      sleepEnd: '00:00',
+      prompts: ['主动问候']
+    },
+    service,
+    mainConfig
+  )
+
+  await trigger.refreshTargets()
+  await trigger.checkAndTrigger()
+
+  assert.equal(trigger.getRoomState(target.key), undefined)
+  assert.equal(wakeups.length, 0)
 })

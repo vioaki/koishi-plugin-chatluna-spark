@@ -3,12 +3,7 @@ const assert = require('node:assert/strict')
 
 const { registerTaskCommands, registerTargetCommands } = require('../lib/commands')
 const { SparkTargetRegistry } = require('../lib/service/targets')
-const {
-  createMemoryDatabase,
-  createSession,
-  createTask,
-  createProviderConfig
-} = require('./helpers')
+const { createMemoryDatabase, createSession, createTask, createTaskMetadata } = require('./helpers')
 
 function createCommandContext() {
   const commands = new Map()
@@ -42,7 +37,7 @@ test('task commands use the public adapter and preserve creator permissions', as
   const { ctx, commands } = createCommandContext()
   const task = createTask({
     id: 7,
-    config: createProviderConfig({ content: '喝水', createdBy: 'user-a' })
+    metadata: createTaskMetadata({ content: '喝水', createdBy: 'user-a' })
   })
   const calls = []
   const service = {
@@ -89,7 +84,7 @@ test('task commands reject non-owner access and allow administrator stats', asyn
   const { ctx, commands } = createCommandContext()
   const task = createTask({
     ownerKey: 'sandbox:koishi:user-b',
-    config: createProviderConfig({ createdBy: 'user-b' })
+    metadata: createTaskMetadata({ createdBy: 'user-b' })
   })
   const service = {
     trigger: {
@@ -139,6 +134,57 @@ test('target registry creates direct, group-shared, and group-personal entries',
   assert.equal(database.rows.length, 3)
 })
 
+test('target registry keeps legacy targets on ChatLuna and separates Character targets', async () => {
+  const now = new Date()
+  const database = createMemoryDatabase([
+    {
+      id: 1,
+      name: '旧目标',
+      enabled: true,
+      platform: 'sandbox',
+      selfId: 'koishi',
+      type: 'group',
+      userId: 'user-a',
+      guildId: 'guild-a',
+      channelId: 'channel-a',
+      scope: 'shared',
+      features: ['festival'],
+      createdAt: now,
+      updatedAt: now
+    }
+  ])
+  const registry = new SparkTargetRegistry({ database })
+  const session = createSession({
+    isDirect: false,
+    guildId: 'guild-a',
+    channelId: 'channel-a'
+  })
+
+  const legacy = (await registry.listEntries())[0]
+  const character = await registry.addFromSession(session, '角色目标', { engine: 'character' })
+
+  assert.equal(legacy.engine, 'chatluna')
+  assert.equal(legacy.key, 'shared:sandbox:koishi:guild-a')
+  assert.equal(character.engine, 'character')
+  assert.equal(character.key, 'character:shared:sandbox:koishi:guild-a')
+  assert.deepEqual(character.features, ['festival'])
+  assert.equal(database.rows.length, 2)
+})
+
+test('Character group targets reject personal scope', async () => {
+  const registry = new SparkTargetRegistry({ database: createMemoryDatabase() })
+  const session = createSession({
+    isDirect: false,
+    guildId: 'guild-a',
+    channelId: 'channel-a'
+  })
+
+  await assert.rejects(
+    registry.addFromSession(session, '错误目标', { engine: 'character', personal: true }),
+    /Character group targets do not support personal scope/
+  )
+})
+
 test('target registry merges enabled duplicate runtime targets by binding key', async () => {
   const now = new Date()
   const database = createMemoryDatabase([
@@ -186,7 +232,9 @@ test('target commands manage the current conversation and refresh components', a
   ctx.parallel = async () => {
     refreshes++
   }
-  registerTargetCommands(ctx, { targets: registry })
+  registerTargetCommands(ctx, {
+    targets: registry
+  })
 
   const session = createSession({
     authority: 4,
@@ -203,7 +251,52 @@ test('target commands manage the current conversation and refresh components', a
     await commands
       .get('spark.target.features <id> [features:text]')
       .fn({ session }, 'db:1', 'festival proactive'),
-    '已更新 Spark target 功能：[db:1] 启用 测试群 sandbox/koishi group/shared guild=guild-a channel=channel-a user=user-a features=festival,proactive'
+    '已更新 Spark target 功能：[db:1] 启用 测试群 ChatLuna sandbox/koishi group/shared guild=guild-a channel=channel-a user=user-a features=festival,proactive'
   )
   assert.equal(refreshes, 2)
+})
+
+test('target command uses --character for festival-only Character targets', async () => {
+  const database = createMemoryDatabase()
+  const registry = new SparkTargetRegistry({ database })
+  const { ctx, commands } = createCommandContext()
+  registerTargetCommands(ctx, {
+    targets: registry,
+    characterFestival: {}
+  })
+  const session = createSession({
+    authority: 4,
+    isDirect: false,
+    guildId: 'guild-a',
+    channelId: 'channel-a'
+  })
+
+  const output = await commands
+    .get('spark.target.add [name:text]')
+    .fn({ session, options: { character: true } }, '角色群')
+
+  assert.match(output, /Character/)
+  assert.match(output, /Character 节日问候 target/)
+  assert.equal(database.rows[0].engine, 'character')
+  assert.deepEqual(database.rows[0].features, ['festival'])
+
+  assert.equal(
+    await commands
+      .get('spark.target.features <id> [features:text]')
+      .fn({ session }, 'db:1', 'proactive'),
+    'Character target 仅支持 festival；可设置 festival 或 none'
+  )
+})
+
+test('target command explains when the Character festival bridge is unavailable', async () => {
+  const { ctx, commands } = createCommandContext()
+  registerTargetCommands(ctx, {
+    targets: new SparkTargetRegistry({ database: createMemoryDatabase() })
+  })
+
+  const output = await commands
+    .get('spark.target.add [name:text]')
+    .fn({ session: createSession({ authority: 4 }), options: { character: true } }, '角色')
+
+  assert.match(output, /Character 节日问候不可用/)
 })

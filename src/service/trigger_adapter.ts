@@ -1,6 +1,7 @@
 import { Context, Session } from 'koishi'
 import type {
   TriggerActor,
+  TriggerCondition,
   TriggerCreateInput,
   TriggerExecution,
   TriggerRun,
@@ -9,15 +10,23 @@ import type {
   TriggerUpdateInput
 } from 'koishi-plugin-chatluna-agent'
 import { Config } from '../config'
-import { SparkRouting, SparkScheduleType, SparkTriggerMetadata, SparkTriggerOrigin } from '../types'
 import {
-  getSparkConfig,
-  SPARK_TRIGGER_PROVIDER_ID,
-  type SparkProviderConfig
+  SparkRouting,
+  SparkScheduleType,
+  SparkTaskMetadata,
+  SparkTriggerMetadata,
+  SparkTriggerOrigin
+} from '../types'
+import {
+  getLegacySparkConfig,
+  hasLegacyProviderRemovalError,
+  LEGACY_SPARK_TRIGGER_PROVIDER_ID,
+  metadataFromLegacy,
+  type LegacySparkProviderConfig
 } from '../utils/params'
 import { buildTriggerMessage } from '../utils/shared'
+import { attachSparkMetadata, getSparkMetadata, SparkTaskMetadataStore } from './task_metadata'
 import { bindingKeyFromRouting, bindingKeyFromSession } from './targets'
-import { createSparkTriggerProvider } from './trigger_provider'
 
 export interface CreateSparkTriggerInput {
   type: SparkScheduleType
@@ -41,13 +50,7 @@ export interface CreateSparkCronInput extends Omit<
   expression: string
 }
 
-export interface CreateSparkFestivalInput extends Omit<
-  CreateSparkTriggerInput,
-  'type' | 'session' | 'routing'
-> {
-  festivalName: string
-  festivalDate: string
-}
+export type CreateSparkFestivalInput = Omit<CreateSparkTriggerInput, 'type' | 'session' | 'routing'>
 
 const PLUGIN_ACTOR: TriggerActor = {
   key: 'plugin:chatluna-spark',
@@ -59,10 +62,11 @@ const TRIGGER_TIMEOUT_SECONDS = 120
 
 export class SparkTriggerAdapter {
   private _logger = this.ctx.logger('spark:trigger')
-  private _disposeProvider?: () => void
+  private _metadata = new SparkTaskMetadataStore(this.ctx)
   private _disposeAutoCancel?: () => void
   private _disposeCleanupReady?: () => void
   private _disposeCleanupTimer?: () => void
+  private _migration: Promise<void> = Promise.resolve()
   private _started = false
 
   constructor(
@@ -74,18 +78,11 @@ export class SparkTriggerAdapter {
     if (this._started) return
     this.assertTimezone()
     this.assertTriggerV2()
-    this._disposeProvider = this.ctx.chatluna_agent.trigger.registerProvider(
-      createSparkTriggerProvider()
-    )
-    const registered = this.ctx.chatluna_agent.trigger
-      .listProviders()
-      .some((provider) => provider.id === SPARK_TRIGGER_PROVIDER_ID)
-    if (!registered) {
-      this._disposeProvider()
-      this._disposeProvider = undefined
-      throw new Error(`Trigger provider ${SPARK_TRIGGER_PROVIDER_ID} was not registered`)
-    }
-
+    this._migration = this.migrateLegacyTasks().catch((err) => {
+      this._logger.error(
+        `Legacy Spark trigger migration failed: ${err instanceof Error ? err.message : String(err)}`
+      )
+    })
     this.listenForAutoCancel()
     this.startExecutedAiTriggerCleanup()
     this._started = true
@@ -98,29 +95,24 @@ export class SparkTriggerAdapter {
     this._disposeCleanupReady = undefined
     this._disposeCleanupTimer?.()
     this._disposeCleanupTimer = undefined
-    this._disposeProvider?.()
-    this._disposeProvider = undefined
     this._started = false
   }
 
   async createOnce(input: CreateSparkTriggerInput): Promise<TriggerTask> {
+    await this._migration
     if (input.fireAt.getTime() <= Date.now()) {
       throw new Error('fireAt must be in the future')
     }
 
     const source = this.resolveSource(input)
     const actor = await this.resolveActor(source.session)
-    const routing = source.routing
     const targetKey = input.bindingKey ?? (await this.resolveTargetKey(source))
     const origin = this.resolveOrigin(input.metadata?.sparkOrigin, 'tool')
-    const config: SparkProviderConfig = {
-      mode: 'once',
-      at: input.fireAt.toISOString(),
-      timezone: this.config.timezone,
+    const metadata: SparkTaskMetadata = {
       sparkType: input.type,
       origin,
       content: input.content,
-      createdBy: input.createdBy ?? input.session?.userId ?? routing.userId,
+      createdBy: input.createdBy ?? input.session?.userId ?? source.routing.userId,
       autoCancelOnUserMessage: input.autoCancelOnUserMessage === true,
       autoDeleteAfterFire: this.shouldAutoDeleteAfterFire(input, origin),
       targetKey,
@@ -129,24 +121,28 @@ export class SparkTriggerAdapter {
         : {})
     }
 
-    return await this.createTask(actor, routing, config, {
-      name: input.name ?? this.formatTaskName(input.type, input.content),
-      replyTo: input.replyTo
-    })
+    return await this.createTask(
+      actor,
+      source.routing,
+      { type: 'once', at: input.fireAt.toISOString() },
+      metadata,
+      {
+        name: input.name ?? this.formatTaskName(input.type, input.content),
+        replyTo: input.replyTo
+      }
+    )
   }
 
   async createCron(
     source: Session | SparkRouting,
     input: CreateSparkCronInput
   ): Promise<TriggerTask> {
+    await this._migration
     const resolved = this.resolveExternalSource(source)
     const actor = await this.resolveActor(resolved.session)
     const origin = this.resolveOrigin(input.metadata?.sparkOrigin, 'scheduled')
     const targetKey = input.bindingKey ?? (await this.resolveTargetKey(resolved))
-    const config: SparkProviderConfig = {
-      mode: 'cron',
-      expression: input.expression,
-      timezone: this.config.timezone,
+    const metadata: SparkTaskMetadata = {
       sparkType: input.type,
       origin,
       content: input.content,
@@ -159,23 +155,29 @@ export class SparkTriggerAdapter {
         : {})
     }
 
-    return await this.createTask(actor, resolved.routing, config, {
-      name: input.name ?? this.formatTaskName(input.type, input.content),
-      replyTo: input.replyTo
-    })
+    return await this.createTask(
+      actor,
+      resolved.routing,
+      {
+        type: 'cron',
+        expression: input.expression,
+        timezone: this.config.timezone,
+        misfire: 'skip'
+      },
+      metadata,
+      {
+        name: input.name ?? this.formatTaskName(input.type, input.content),
+        replyTo: input.replyTo
+      }
+    )
   }
 
-  async createFestival(
-    source: Session | SparkRouting,
-    input: CreateSparkFestivalInput
-  ): Promise<TriggerTask> {
+  async createFestival(source: Session | SparkRouting, input: CreateSparkFestivalInput) {
+    await this._migration
     const resolved = this.resolveExternalSource(source)
     const actor = await this.resolveActor(resolved.session)
     const targetKey = input.bindingKey ?? (await this.resolveTargetKey(resolved))
-    const config: SparkProviderConfig = {
-      mode: 'festival',
-      at: input.fireAt.toISOString(),
-      timezone: this.config.timezone,
+    const metadata: SparkTaskMetadata = {
       sparkType: 'festival',
       origin: 'festival',
       content: input.content,
@@ -183,20 +185,25 @@ export class SparkTriggerAdapter {
       autoCancelOnUserMessage: false,
       autoDeleteAfterFire: false,
       targetKey,
-      festivalName: input.festivalName,
-      festivalDate: input.festivalDate,
       ...(typeof input.metadata?.configKey === 'string'
         ? { configKey: input.metadata.configKey }
         : {})
     }
 
-    return await this.createTask(actor, resolved.routing, config, {
-      name: input.name ?? this.formatTaskName('festival', input.content),
-      replyTo: input.replyTo
-    })
+    return await this.createTask(
+      actor,
+      resolved.routing,
+      { type: 'once', at: input.fireAt.toISOString() },
+      metadata,
+      {
+        name: input.name ?? this.formatTaskName('festival', input.content),
+        replyTo: input.replyTo
+      }
+    )
   }
 
   async wakeup(source: Session | SparkRouting, content: string) {
+    await this._migration
     const resolved = this.resolveExternalSource(source)
     const actor = await this.resolveActor(resolved.session)
     return await this.ctx.chatluna_agent.trigger.wakeup(actor, {
@@ -206,39 +213,51 @@ export class SparkTriggerAdapter {
   }
 
   async listSparkTasks(session?: Session) {
+    await this._migration
     const actor = await this.resolveActor(session)
-    return await this.ctx.chatluna_agent.trigger.list(actor, {
-      conditionType: SPARK_TRIGGER_PROVIDER_ID
+    const [tasks, metadata] = await Promise.all([
+      this.ctx.chatluna_agent.trigger.list(actor),
+      this._metadata.list()
+    ])
+    return tasks.flatMap((task) => {
+      const value = metadata.get(task.id)
+      return value ? [attachSparkMetadata(task, value)] : []
     })
   }
 
   async getSparkTask(id: number, session?: Session) {
+    await this._migration
     const actor = await this.resolveActor(session)
     const task = await this.ctx.chatluna_agent.trigger.get(actor, id)
-    return this.isSparkTask(task) ? task : null
+    const metadata = await this._metadata.get(id)
+    return metadata ? attachSparkMetadata(task, metadata) : null
   }
 
   async removeSparkTask(id: number, session?: Session) {
-    await this.ctx.chatluna_agent.trigger.remove(await this.resolveActor(session), id)
+    await this._migration
+    await this.removeTask(await this.resolveActor(session), id)
   }
 
   async setSparkTaskEnabled(id: number, enabled: boolean, session?: Session) {
-    return await this.ctx.chatluna_agent.trigger.setEnabled(
+    await this._migration
+    const task = await this.ctx.chatluna_agent.trigger.setEnabled(
       await this.resolveActor(session),
       id,
       enabled
     )
+    const metadata = await this._metadata.get(id)
+    return metadata ? attachSparkMetadata(task, metadata) : task
   }
 
   async fireSparkTask(id: number, session?: Session): Promise<TriggerRun> {
     const actor = await this.resolveActor(session)
-    const task = await this.ctx.chatluna_agent.trigger.get(actor, id)
-    if (!this.isSparkTask(task)) throw new Error(`Spark task not found: ${id}`)
+    const task = await this.getSparkTask(id, session)
+    if (!task) throw new Error(`Spark task not found: ${id}`)
 
     const run = await this.ctx.chatluna_agent.trigger.fire(actor, id)
-    const config = getSparkConfig(task)
-    if (run.status === 'completed' && config?.autoDeleteAfterFire === true) {
-      await this.ctx.chatluna_agent.trigger.remove(actor, id)
+    const metadata = getSparkMetadata(task)
+    if (run.status === 'completed' && metadata?.autoDeleteAfterFire === true) {
+      await this.removeTask(actor, id)
     }
     return run
   }
@@ -248,24 +267,24 @@ export class SparkTriggerAdapter {
     input: {
       name?: string
       enabled?: boolean
-      config?: SparkProviderConfig
+      condition?: TriggerCondition
+      metadata?: SparkTaskMetadata
       content?: string
       routing?: SparkRouting
       replyTo?: 'channel' | 'user' | 'silent'
     },
     session?: Session
   ) {
-    const config = input.config ?? getSparkConfig(task)
-    if (!config) throw new Error(`Spark task [${task.id}] has invalid provider config`)
-    const nextConfig = input.content == null ? config : { ...config, content: input.content }
+    await this._migration
+    const currentMetadata =
+      input.metadata ?? getSparkMetadata(task) ?? (await this._metadata.get(task.id))
+    if (!currentMetadata) throw new Error(`Spark task [${task.id}] has no metadata`)
+    const nextMetadata =
+      input.content == null ? currentMetadata : { ...currentMetadata, content: input.content }
     const update: TriggerUpdateInput = {
       name: input.name ?? task.name,
       enabled: input.enabled ?? task.enabled,
-      condition: {
-        type: 'extension',
-        provider: SPARK_TRIGGER_PROVIDER_ID,
-        config: nextConfig
-      },
+      condition: input.condition ?? task.condition,
       execution: input.content == null ? task.execution : this.buildExecution(input.content),
       target: input.routing
         ? this.buildTarget(input.routing, input.replyTo)
@@ -273,31 +292,27 @@ export class SparkTriggerAdapter {
           ? { ...task.target, delivery: this.resolveDelivery(input.replyTo) }
           : task.target
     }
-    return await this.ctx.chatluna_agent.trigger.update(
-      await this.resolveActor(session),
-      task.id,
-      update
-    )
+    return await this.updateTask(await this.resolveActor(session), task, update, nextMetadata)
   }
 
   async findSparkTaskByConfigKey(targetKey: string, configKey: string) {
     const tasks = await this.listSparkTasks()
     return tasks.find((task) => {
-      const config = getSparkConfig(task)
-      return config?.targetKey === targetKey && config.configKey === configKey
+      const metadata = getSparkMetadata(task)
+      return metadata?.targetKey === targetKey && metadata.configKey === configKey
     })
   }
 
   async findSparkTaskByTargetKey(origin: SparkTriggerOrigin, targetKey: string) {
     const tasks = await this.listSparkTasks()
     return tasks.find((task) => {
-      const config = getSparkConfig(task)
-      return config?.origin === origin && config.targetKey === targetKey
+      const metadata = getSparkMetadata(task)
+      return metadata?.origin === origin && metadata.targetKey === targetKey
     })
   }
 
   isSparkTask(task: TriggerTask): boolean {
-    return getSparkConfig(task) != null
+    return getSparkMetadata(task) != null
   }
 
   async cleanupExecutedAiTriggers() {
@@ -308,7 +323,7 @@ export class SparkTriggerAdapter {
     for (const task of tasks) {
       if (!this.isExecutedAiTriggerCleanupCandidate(task)) continue
       try {
-        await this.ctx.chatluna_agent.trigger.remove(PLUGIN_ACTOR, task.id)
+        await this.removeTask(PLUGIN_ACTOR, task.id)
         removed++
         this._logger.info(`Auto-deleted executed AI trigger [${task.id}]`)
       } catch (err) {
@@ -338,22 +353,194 @@ export class SparkTriggerAdapter {
   private async createTask(
     actor: TriggerActor,
     routing: SparkRouting,
-    config: SparkProviderConfig,
+    condition: TriggerCondition,
+    metadata: SparkTaskMetadata,
     options: { name: string; replyTo?: 'channel' | 'user' | 'silent' }
   ) {
     const input: TriggerCreateInput = {
       name: options.name,
-      condition: {
-        type: 'extension',
-        provider: SPARK_TRIGGER_PROVIDER_ID,
-        config
-      },
-      execution: this.buildExecution(config.content),
+      condition,
+      execution: this.buildExecution(metadata.content),
       target: this.buildTarget(routing, options.replyTo)
     }
     const task = await this.ctx.chatluna_agent.trigger.create(actor, input)
-    this._logger.info(`Created Spark ${config.sparkType} trigger [${task.id}]`)
-    return task
+    try {
+      await this._metadata.save(task.id, metadata)
+    } catch (err) {
+      await this.ctx.chatluna_agent.trigger.remove(PLUGIN_ACTOR, task.id)
+      throw err
+    }
+    this._logger.info(`Created Spark ${metadata.sparkType} trigger [${task.id}]`)
+    return attachSparkMetadata(task, metadata)
+  }
+
+  private async updateTask(
+    actor: TriggerActor,
+    task: TriggerTask,
+    input: TriggerUpdateInput,
+    metadata: SparkTaskMetadata
+  ) {
+    const previousMetadata = await this._metadata.get(task.id)
+    await this._metadata.save(task.id, metadata)
+    try {
+      const updated = await this.ctx.chatluna_agent.trigger.update(actor, task.id, input)
+      return attachSparkMetadata(updated, metadata)
+    } catch (err) {
+      await this.restoreMetadata(task.id, previousMetadata)
+      throw err
+    }
+  }
+
+  private async removeTask(actor: TriggerActor, id: number) {
+    await this.ctx.chatluna_agent.trigger.remove(actor, id)
+    try {
+      await this._metadata.remove(id)
+    } catch (err) {
+      this._logger.warn(
+        `Failed to remove Spark metadata for trigger [${id}]: ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+  }
+
+  private async migrateLegacyTasks() {
+    const tasks = await this.ctx.chatluna_agent.trigger.list(PLUGIN_ACTOR, {
+      conditionType: LEGACY_SPARK_TRIGGER_PROVIDER_ID
+    })
+    let migrated = 0
+    for (const task of tasks) {
+      const legacy = getLegacySparkConfig(task)
+      if (!legacy) {
+        this._logger.warn(`Skipped invalid legacy Spark trigger [${task.id}]`)
+        continue
+      }
+      try {
+        await this.migrateLegacyTask(task, legacy)
+        migrated++
+      } catch (err) {
+        this._logger.warn(
+          `Failed to migrate legacy Spark trigger [${task.id}]: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+    }
+    if (migrated > 0) {
+      this._logger.info(`Migrated ${migrated} legacy Spark trigger(s) to Trigger V2 built-ins`)
+    }
+    await this.removeOrphanMetadata()
+  }
+
+  private async migrateLegacyTask(task: TriggerTask, legacy: LegacySparkProviderConfig) {
+    const metadata = metadataFromLegacy(legacy)
+    const input: TriggerUpdateInput = {
+      name: task.name,
+      enabled: task.enabled,
+      condition: this.legacyCondition(legacy),
+      execution: task.execution,
+      target: task.target
+    }
+    if (hasLegacyProviderRemovalError(task)) {
+      await this.replaceLegacyTask(task, input, metadata)
+      return
+    }
+    await this.updateTask(PLUGIN_ACTOR, task, input, metadata)
+  }
+
+  private async replaceLegacyTask(
+    task: TriggerTask,
+    input: TriggerUpdateInput,
+    metadata: SparkTaskMetadata
+  ) {
+    const trigger = this.ctx.chatluna_agent.trigger
+    const owner: TriggerActor = {
+      key: task.ownerKey,
+      userId: task.target.principalId,
+      authority: PLUGIN_ACTOR.authority
+    }
+    if (task.enabled) await trigger.setEnabled(PLUGIN_ACTOR, task.id, false)
+
+    let replacement: TriggerTask | undefined
+    try {
+      replacement = await trigger.create(owner, input)
+      await this._metadata.save(replacement.id, metadata)
+    } catch (err) {
+      if (replacement) {
+        try {
+          await trigger.remove(PLUGIN_ACTOR, replacement.id)
+        } catch (cleanupError) {
+          this._logger.warn(
+            `Failed to remove incomplete Spark trigger [${replacement.id}]: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+          )
+        }
+      }
+      await this.restoreLegacyTask(task)
+      throw err
+    }
+    if (!replacement) throw new Error(`Failed to create replacement for Spark trigger [${task.id}]`)
+
+    try {
+      await trigger.remove(PLUGIN_ACTOR, task.id)
+    } catch (err) {
+      try {
+        await trigger.remove(PLUGIN_ACTOR, replacement.id)
+        await this._metadata.remove(replacement.id)
+      } catch (cleanupError) {
+        this._logger.warn(
+          `Failed to roll back replacement Spark trigger [${replacement.id}]: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+        )
+      }
+      await this.restoreLegacyTask(task)
+      throw err
+    }
+
+    try {
+      await this._metadata.remove(task.id)
+    } catch (err) {
+      this._logger.warn(
+        `Failed to remove legacy Spark metadata [${task.id}]: ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+
+    this._logger.info(
+      `Rebuilt legacy Spark trigger [${task.id}] as [${replacement.id}] after provider removal`
+    )
+  }
+
+  private legacyCondition(config: LegacySparkProviderConfig): TriggerCondition {
+    if (config.mode === 'cron') {
+      return {
+        type: 'cron',
+        expression: config.expression,
+        timezone: config.timezone,
+        misfire: 'skip'
+      }
+    }
+    return { type: 'once', at: config.at }
+  }
+
+  private async restoreLegacyTask(task: TriggerTask) {
+    if (!task.enabled) return
+    try {
+      await this.ctx.chatluna_agent.trigger.setEnabled(PLUGIN_ACTOR, task.id, true)
+    } catch (err) {
+      this._logger.warn(
+        `Failed to restore legacy Spark trigger [${task.id}]: ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+  }
+
+  private async restoreMetadata(taskId: number, metadata: SparkTaskMetadata | null) {
+    if (metadata) await this._metadata.save(taskId, metadata)
+    else await this._metadata.remove(taskId)
+  }
+
+  private async removeOrphanMetadata() {
+    const [tasks, metadata] = await Promise.all([
+      this.ctx.chatluna_agent.trigger.list(PLUGIN_ACTOR),
+      this._metadata.list()
+    ])
+    const activeIds = new Set(tasks.map((task) => task.id))
+    for (const taskId of metadata.keys()) {
+      if (!activeIds.has(taskId)) await this._metadata.remove(taskId)
+    }
   }
 
   private buildExecution(content: string): TriggerExecution {
@@ -451,11 +638,11 @@ export class SparkTriggerAdapter {
   }
 
   private isExecutedAiTriggerCleanupCandidate(task: TriggerTask) {
-    const config = getSparkConfig(task)
+    const metadata = getSparkMetadata(task)
     return (
-      config?.mode === 'once' &&
-      config.autoDeleteAfterFire === true &&
-      (config.origin === 'tool' || config.origin === 'xml') &&
+      task.condition.type === 'once' &&
+      metadata?.autoDeleteAfterFire === true &&
+      (metadata.origin === 'tool' || metadata.origin === 'xml') &&
       task.state.status === 'completed' &&
       task.state.runCount > 0 &&
       task.state.lastRunAt != null &&
@@ -478,17 +665,18 @@ export class SparkTriggerAdapter {
         } catch {}
 
         const tasks = (await this.listSparkTasks(session)).filter((task) => {
-          const config = getSparkConfig(task)
+          const metadata = getSparkMetadata(task)
           return (
             task.enabled &&
-            config?.autoCancelOnUserMessage === true &&
-            config.targetKey != null &&
-            keys.has(config.targetKey)
+            metadata?.autoCancelOnUserMessage === true &&
+            metadata.createdBy === session.userId &&
+            metadata.targetKey != null &&
+            keys.has(metadata.targetKey)
           )
         })
         const actor = await this.actorFromSession(session)
         for (const task of tasks) {
-          await this.ctx.chatluna_agent.trigger.remove(actor, task.id)
+          await this.removeTask(actor, task.id)
           this._logger.info(`Auto-cancelled follow-up trigger [${task.id}] by user message`)
         }
       } catch (err) {
@@ -514,18 +702,7 @@ export class SparkTriggerAdapter {
 
   private assertTriggerV2() {
     const trigger = this.ctx.chatluna_agent?.trigger as unknown as Record<string, unknown>
-    const required = [
-      'create',
-      'list',
-      'get',
-      'remove',
-      'update',
-      'setEnabled',
-      'fire',
-      'wakeup',
-      'registerProvider',
-      'listProviders'
-    ]
+    const required = ['create', 'list', 'get', 'remove', 'update', 'setEnabled', 'fire', 'wakeup']
     const missing = required.filter((name) => typeof trigger?.[name] !== 'function')
     if (missing.length > 0) {
       throw new Error(
