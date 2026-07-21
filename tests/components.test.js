@@ -322,7 +322,7 @@ test('festival component sends Character targets only to the native festival bri
         return []
       }
     },
-    characterFestival: {
+    character: {
       async syncTarget(value, input) {
         synced.push({ value, input })
       },
@@ -412,7 +412,7 @@ test('proactive component tracks only registered targets and wakes their route',
   assert.deepEqual(wakeups[0].source, target.routing)
 })
 
-test('proactive component ignores Character targets', async () => {
+test('proactive component tracks Character targets and uses the native Character adapter', async () => {
   const target = createTarget({ engine: 'character', features: ['proactive'] })
   const wakeups = []
   const service = {
@@ -421,13 +421,18 @@ test('proactive component ignores Character targets', async () => {
         return [target]
       },
       getSessionBindingKeys() {
-        return new Set()
+        return new Set([target.key.replace(/^character:/, '')])
       }
     },
     trigger: {
-      async wakeup(...args) {
-        wakeups.push(args)
-        return { ok: true }
+      async wakeup() {
+        throw new Error('Character targets must not use ChatLuna Agent')
+      }
+    },
+    character: {
+      async triggerProactive(value, prompt) {
+        wakeups.push({ value, prompt })
+        return true
       }
     }
   }
@@ -449,8 +454,15 @@ test('proactive component ignores Character targets', async () => {
   )
 
   await trigger.refreshTargets()
+  const state = trigger.getRoomState(target.key)
+  state.lastChatTime = 0
+  state.currentProbability = 0.5
+  trigger.recordMessage(createSession())
+  assert.equal(state.currentProbability, 0)
+  state.lastChatTime = 0
   await trigger.checkAndTrigger()
 
-  assert.equal(trigger.getRoomState(target.key), undefined)
-  assert.equal(wakeups.length, 0)
+  assert.equal(trigger.getRoomState(target.key), state)
+  assert.deepEqual(wakeups, [{ value: target, prompt: '主动问候' }])
+  assert.equal(state.currentProbability, 0)
 })

@@ -537,9 +537,8 @@ test('adapter rebuilds only legacy tasks already damaged by provider removal', a
             ? active.filter((task) => task.condition.type === 'extension')
             : active
         },
-        async setEnabled(actor, id, enabled) {
-          calls.push(['setEnabled', actor, id, enabled])
-          return createTask({ id, enabled, attachMetadata: false })
+        async setEnabled() {
+          throw new Error('Agent validates the unknown provider before changing enabled state')
         },
         async create(actor, input) {
           calls.push(['create', actor, input])
@@ -570,12 +569,12 @@ test('adapter rebuilds only legacy tasks already damaged by provider removal', a
 
   assert.deepEqual(
     calls.map((call) => call[0]),
-    ['setEnabled', 'create', 'remove']
+    ['create', 'remove']
   )
   assert.equal(tasks.length, 1)
   assert.equal(tasks[0].id, 42)
   assert.deepEqual(tasks[0].condition, { type: 'once', at: legacyConfig.at })
   assert.equal(store.metadataRows[0].taskId, 42)
-  assert.equal(calls[1][1].key, stale.ownerKey)
-  assert.equal(calls[2][1].authority, 4)
+  assert.equal(calls[0][1].key, stale.ownerKey)
+  assert.equal(calls[1][1].authority, 4)
 })

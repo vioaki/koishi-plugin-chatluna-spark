@@ -100,8 +100,8 @@ function createApplyContext(options = {}) {
       callback()
       return () => {}
     },
-    inject(_services, callback) {
-      if (options.character) callback(ctx)
+    inject(services, callback) {
+      if (options.character && services.every((service) => ctx[service])) callback(ctx)
     },
     async parallel(event) {
       if (event === 'spark/targets-updated') targetRefreshes++
@@ -153,6 +153,17 @@ function createApplyContext(options = {}) {
   }
   if (options.character) {
     ctx.bots = []
+    ctx.chatluna_character = {
+      isMute() {
+        return false
+      },
+      isResponseLocked() {
+        return false
+      },
+      async triggerCollect() {
+        return true
+      }
+    }
     ctx.chatluna_character_trigger = {
       _config: {},
       async registerWakeUpReply() {},
@@ -202,15 +213,14 @@ test('Trigger V2 and component startup failures do not prevent command registrat
   assert.ok(ctx.records.some(([level, message]) => level === 'warn' && /sync failed/.test(message)))
 })
 
-test('apply attaches only the optional Character festival bridge', async () => {
+test('apply attaches the optional Character integration', async () => {
   const ctx = createApplyContext({ character: true })
   apply(ctx, createConfig())
   await new Promise((resolve) => setImmediate(resolve))
 
   assert.ok(
     ctx.records.some(
-      ([level, message]) =>
-        level === 'info' && /Spark Character festival bridge attached/.test(message)
+      ([level, message]) => level === 'info' && /Spark Character integration attached/.test(message)
     )
   )
   assert.ok(ctx.commands.includes('spark.list'))
@@ -339,7 +349,7 @@ test('package metadata locks Trigger V2 development dependencies and release sur
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
   const gitignore = fs.readFileSync(path.join(root, '.gitignore'), 'utf8')
 
-  assert.equal(pkg.version, '1.5.0')
+  assert.equal(pkg.version, '1.5.1')
   assert.equal(pkg.dependencies['cron-parser'], undefined)
   assert.equal(pkg.devDependencies['koishi-plugin-chatluna'], '1.4.0-alpha.41')
   assert.equal(pkg.devDependencies['koishi-plugin-chatluna-agent'], '1.0.41')
@@ -348,7 +358,10 @@ test('package metadata locks Trigger V2 development dependencies and release sur
   assert.equal(pkg.peerDependencies['koishi-plugin-chatluna-agent'], '>=1.0.41 <2.0.0')
   assert.equal(pkg.peerDependencies['koishi-plugin-chatluna-character'], '>=0.0.230 <0.1.0')
   assert.equal(pkg.peerDependenciesMeta['koishi-plugin-chatluna-character'].optional, true)
-  assert.deepEqual(pkg.koishi.service.optional, ['chatluna_character_trigger'])
+  assert.deepEqual(pkg.koishi.service.optional, [
+    'chatluna_character',
+    'chatluna_character_trigger'
+  ])
   assert.equal(pkg.scripts.typecheck, 'tsc --noEmit')
   assert.equal(pkg.scripts.prepack, 'npm run clean && npm run build')
   assert.deepEqual(pkg.files, ['lib', 'README.md', 'LICENSE'])

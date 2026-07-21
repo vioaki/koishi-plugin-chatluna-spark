@@ -10,6 +10,7 @@ import {
 } from '../types'
 
 export const SPARK_TARGET_FEATURES: SparkTargetFeature[] = ['festival', 'scheduled', 'proactive']
+const CHARACTER_TARGET_FEATURES: SparkTargetFeature[] = ['festival', 'proactive']
 
 export interface SparkTargetEntry extends SparkTarget {
   id: string
@@ -210,7 +211,7 @@ export class SparkTargetRegistry {
       guildId,
       channelId,
       scope,
-      features: engine === 'character' ? ['festival'] : [...SPARK_TARGET_FEATURES]
+      features: engine === 'character' ? [...CHARACTER_TARGET_FEATURES] : [...SPARK_TARGET_FEATURES]
     }
   }
 
@@ -268,8 +269,15 @@ export class SparkTargetRegistry {
 
   private normalizeFeatures(features: unknown, engine: SparkEngine): SparkTargetFeature[] {
     if (engine === 'character') {
-      if (!Array.isArray(features)) return ['festival']
-      return features.includes('festival') ? ['festival'] : []
+      if (!Array.isArray(features)) return [...CHARACTER_TARGET_FEATURES]
+      if (features.length === 0) return []
+      return [
+        ...new Set(
+          features.filter((feature): feature is SparkTargetFeature =>
+            CHARACTER_TARGET_FEATURES.includes(feature as SparkTargetFeature)
+          )
+        )
+      ]
     }
     if (!Array.isArray(features)) {
       return [...SPARK_TARGET_FEATURES]

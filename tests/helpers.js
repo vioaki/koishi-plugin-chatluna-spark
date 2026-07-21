@@ -89,7 +89,7 @@ function createTarget(overrides = {}) {
     scope: overrides.scope ?? (isDirect ? 'personal' : 'shared'),
     features:
       overrides.features ??
-      (engine === 'character' ? ['festival'] : ['festival', 'scheduled', 'proactive']),
+      (engine === 'character' ? ['festival', 'proactive'] : ['festival', 'scheduled', 'proactive']),
     key,
     bindingKey: overrides.bindingKey ?? key,
     routing: overrides.routing ?? {

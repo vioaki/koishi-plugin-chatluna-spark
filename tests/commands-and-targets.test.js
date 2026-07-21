@@ -167,7 +167,7 @@ test('target registry keeps legacy targets on ChatLuna and separates Character t
   assert.equal(legacy.key, 'shared:sandbox:koishi:guild-a')
   assert.equal(character.engine, 'character')
   assert.equal(character.key, 'character:shared:sandbox:koishi:guild-a')
-  assert.deepEqual(character.features, ['festival'])
+  assert.deepEqual(character.features, ['festival', 'proactive'])
   assert.equal(database.rows.length, 2)
 })
 
@@ -183,6 +183,33 @@ test('Character group targets reject personal scope', async () => {
     registry.addFromSession(session, '错误目标', { engine: 'character', personal: true }),
     /Character group targets do not support personal scope/
   )
+})
+
+test('target registry preserves explicit Character feature choices', async () => {
+  const now = new Date()
+  const registry = new SparkTargetRegistry({
+    database: createMemoryDatabase([
+      {
+        id: 1,
+        name: '仅节日',
+        enabled: true,
+        engine: 'character',
+        platform: 'sandbox',
+        selfId: 'koishi',
+        type: 'group',
+        userId: 'user-a',
+        guildId: 'guild-a',
+        channelId: 'channel-a',
+        scope: 'shared',
+        features: ['festival'],
+        createdAt: now,
+        updatedAt: now
+      }
+    ])
+  })
+
+  const [target] = await registry.listEntries()
+  assert.deepEqual(target.features, ['festival'])
 })
 
 test('target registry merges enabled duplicate runtime targets by binding key', async () => {
@@ -256,13 +283,13 @@ test('target commands manage the current conversation and refresh components', a
   assert.equal(refreshes, 2)
 })
 
-test('target command uses --character for festival-only Character targets', async () => {
+test('target command uses --character for Character festival and proactive targets', async () => {
   const database = createMemoryDatabase()
   const registry = new SparkTargetRegistry({ database })
   const { ctx, commands } = createCommandContext()
   registerTargetCommands(ctx, {
     targets: registry,
-    characterFestival: {}
+    character: {}
   })
   const session = createSession({
     authority: 4,
@@ -276,19 +303,19 @@ test('target command uses --character for festival-only Character targets', asyn
     .fn({ session, options: { character: true } }, '角色群')
 
   assert.match(output, /Character/)
-  assert.match(output, /Character 节日问候 target/)
+  assert.match(output, /Character target/)
   assert.equal(database.rows[0].engine, 'character')
-  assert.deepEqual(database.rows[0].features, ['festival'])
+  assert.deepEqual(database.rows[0].features, ['festival', 'proactive'])
 
-  assert.equal(
+  assert.match(
     await commands
       .get('spark.target.features <id> [features:text]')
       .fn({ session }, 'db:1', 'proactive'),
-    'Character target 仅支持 festival；可设置 festival 或 none'
+    /features=proactive$/
   )
 })
 
-test('target command explains when the Character festival bridge is unavailable', async () => {
+test('target command explains when Character integration is unavailable', async () => {
   const { ctx, commands } = createCommandContext()
   registerTargetCommands(ctx, {
     targets: new SparkTargetRegistry({ database: createMemoryDatabase() })
@@ -298,5 +325,5 @@ test('target command explains when the Character festival bridge is unavailable'
     .get('spark.target.add [name:text]')
     .fn({ session: createSession({ authority: 4 }), options: { character: true } }, '角色')
 
-  assert.match(output, /Character 节日问候不可用/)
+  assert.match(output, /Character 功能不可用/)
 })

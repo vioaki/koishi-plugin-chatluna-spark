@@ -29,7 +29,14 @@ interface CharacterTriggerStore {
   keys(): string[]
 }
 
-interface CharacterContext extends Context {
+interface CharacterMessageCollector {
+  isMute(session: Session): boolean
+  isResponseLocked(session: Session): boolean
+  triggerCollect(session: Session, triggerReason: string): Promise<boolean>
+}
+
+type CharacterContext = Context & {
+  chatluna_character: CharacterMessageCollector
   chatluna_character_trigger: CharacterTriggerStore
 }
 
@@ -41,18 +48,18 @@ export interface CharacterFestivalInput {
 
 const CHARACTER_FESTIVAL_MARKER = /\[spark-character-festival:(\d+):(\d{4}-\d{2}-\d{2})\]/
 
-export class CharacterFestivalAdapter {
+export class CharacterAdapter {
   private ctx: CharacterContext
   private logger: ReturnType<Context['logger']>
 
   constructor(ctx: Context) {
     this.ctx = ctx as CharacterContext
-    this.logger = this.ctx.logger('spark:character-festival')
+    this.logger = this.ctx.logger('spark:character')
   }
 
   start() {
-    const store = this.ctx.chatluna_character_trigger as unknown as Record<string, unknown>
-    const required = [
+    const store = (this.ctx.chatluna_character_trigger ?? {}) as unknown as Record<string, unknown>
+    const requiredStoreMethods = [
       'registerWakeUpReply',
       'setWakeUpReplies',
       'getWakeUpReplies',
@@ -60,12 +67,29 @@ export class CharacterFestivalAdapter {
       'getLastSession',
       'keys'
     ]
-    const missing = required.filter((method) => typeof store[method] !== 'function')
-    if (missing.length > 0) {
+    const missingStoreMethods = requiredStoreMethods.filter(
+      (method) => typeof store[method] !== 'function'
+    )
+    const collector = (this.ctx.chatluna_character ?? {}) as unknown as Record<string, unknown>
+    const requiredCollectorMethods = ['isMute', 'isResponseLocked', 'triggerCollect']
+    const missingCollectorMethods = requiredCollectorMethods.filter(
+      (method) => typeof collector[method] !== 'function'
+    )
+    const missing = [...missingStoreMethods, ...missingCollectorMethods]
+    if (missing.length) {
       throw new Error(
-        `ChatLuna Character >= 0.0.230 is required; missing trigger methods: ${missing.join(', ')}`
+        `ChatLuna Character >= 0.0.230 is required; missing methods: ${missing.join(', ')}`
       )
     }
+  }
+
+  async triggerProactive(target: SparkTargetEntry, prompt: string) {
+    const session = this.resolveSession(target)
+    this.ctx.chatluna_character_trigger.setLastSession(session)
+
+    const collector = this.ctx.chatluna_character
+    if (collector.isMute(session) || collector.isResponseLocked(session)) return false
+    return await collector.triggerCollect(session, `Spark 主动聊天：${prompt}`)
   }
 
   async syncTarget(target: SparkTargetEntry, input: CharacterFestivalInput) {
@@ -162,7 +186,7 @@ export class CharacterFestivalAdapter {
       guild: routing.isDirect
         ? undefined
         : { id: routing.guildId ?? routing.channelId ?? routing.userId },
-      // Scheduled greetings are active messages; a placeholder ID makes QQ send them as replies.
+      // Omitting an ID prevents active QQ messages from being encoded as replies.
       message: { content: '', elements: [] },
       selfId: bot.selfId,
       timestamp: Date.now(),

@@ -4,7 +4,7 @@ import { registerTargetCommands, registerTaskCommands } from './commands'
 import { extendDatabase } from './database'
 import { setupChatlunaInterceptor } from './middleware/chatluna_interceptor'
 import { SparkService } from './service'
-import { CharacterFestivalAdapter } from './service/character_festival'
+import { CharacterAdapter } from './service/character'
 import { registerSparkScheduleTool } from './tool/spark_schedule'
 import { FestivalTrigger } from './triggers/festival'
 import { ProactiveTrigger } from './triggers/proactive'
@@ -18,7 +18,7 @@ export { registerTaskCommands, registerTargetCommands } from './commands'
 export const name = 'chatluna-spark'
 export const inject = {
   required: ['database', 'chatluna', 'chatluna_agent'],
-  optional: ['chatluna_character_trigger']
+  optional: ['chatluna_character', 'chatluna_character_trigger']
 }
 
 export const usage = `
@@ -26,7 +26,7 @@ export const usage = `
 
 文档：https://github.com/vioaki/koishi-plugin-chatluna-spark#readme
 
-为 ChatLuna 添加提醒、跟进、定时任务、节日问候和主动聊天，并为 Character 补充节日问候。
+为 ChatLuna 添加主动对话能力，基于 ChatLuna Agent Trigger 支持定时提醒、跟进、节日问候、主动聊天等功能。
 
 ### 当前会话加入 target
 
@@ -36,7 +36,7 @@ ChatLuna 的节日问候、配置定时任务、主动聊天只对已加入 targ
 spark.target.add [名称]
 \`\`\`
 
-为当前 Character 会话启用节日问候：
+为当前 Character 会话启用节日问候和主动聊天：
 
 \`\`\`
 spark.target.add --character [名称]
@@ -57,7 +57,7 @@ spark.target.features <id> [festival scheduled proactive|all|none]
 
 ### Character
 
-Character target 仅启用节日问候。提醒、定时任务和主动聊天请使用 Character 内置的 \`wake_up_reply_*\`、\`next_reply\` 和空闲触发。
+Character target 支持节日问候和 Spark 主动聊天。提醒和定时任务请使用 Character 内置的 \`wake_up_reply_*\` 与 \`next_reply\`。
 `
 
 export function apply(ctx: Context, config: Config) {
@@ -107,23 +107,23 @@ export function apply(ctx: Context, config: Config) {
     logger.error(`Spark Trigger V2 startup failed: ${formatError(err)}`)
   }
 
-  ctx.inject(['chatluna_character_trigger'], (characterCtx) => {
-    const characterFestival = new CharacterFestivalAdapter(characterCtx)
+  ctx.inject(['chatluna_character', 'chatluna_character_trigger'], (characterCtx) => {
+    const character = new CharacterAdapter(characterCtx)
     try {
-      characterFestival.start()
-      sparkService.characterFestival = characterFestival
-      logger.info('Spark Character festival bridge attached')
+      character.start()
+      sparkService.character = character
+      logger.info('Spark Character integration attached')
       characterCtx.parallel('spark/targets-updated').catch((err) => {
-        logger.warn(`Character festival refresh failed: ${formatError(err)}`)
+        logger.warn(`Character target refresh failed: ${formatError(err)}`)
       })
     } catch (err) {
-      logger.error(`Spark Character festival bridge startup failed: ${formatError(err)}`)
+      logger.error(`Spark Character integration startup failed: ${formatError(err)}`)
       return
     }
 
     characterCtx.on('dispose', () => {
-      if (sparkService.characterFestival === characterFestival) {
-        sparkService.characterFestival = undefined
+      if (sparkService.character === character) {
+        sparkService.character = undefined
       }
     })
   })

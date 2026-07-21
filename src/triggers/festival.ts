@@ -65,7 +65,7 @@ export class FestivalTrigger {
       }
     }
 
-    if (this.sparkService.characterFestival) {
+    if (this.sparkService.character) {
       for (const target of characterTargets) {
         try {
           await this.syncCharacterTarget(target, now)
@@ -78,7 +78,7 @@ export class FestivalTrigger {
         }
       }
       try {
-        await this.sparkService.characterFestival.cleanupTargets(characterTargets)
+        await this.sparkService.character.cleanupTargets(characterTargets)
       } catch (err) {
         this.ctx
           .logger('spark')
@@ -161,8 +161,8 @@ export class FestivalTrigger {
 
   private async syncCharacterTarget(target: SparkTargetEntry, now: Date) {
     const next = this.findNextFestival(now, true)
-    if (!next || !this.sparkService.characterFestival) return
-    await this.sparkService.characterFestival.syncTarget(target, {
+    if (!next || !this.sparkService.character) return
+    await this.sparkService.character.syncTarget(target, {
       fireAt: next.fireAt,
       content: this.renderPrompt(next.festival),
       festivalDate: next.dateKey

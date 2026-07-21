@@ -118,8 +118,8 @@ export function registerTargetCommands(ctx: Context, sparkService: SparkService)
       }
 
       const engine: SparkEngine = options?.character ? 'character' : 'chatluna'
-      if (engine === 'character' && !sparkService.characterFestival) {
-        return 'Character 节日问候不可用，请先安装并启用 koishi-plugin-chatluna-character >= 0.0.230'
+      if (engine === 'character' && !sparkService.character) {
+        return 'Character 功能不可用，请先安装并启用 koishi-plugin-chatluna-character >= 0.0.230'
       }
 
       let target
@@ -133,7 +133,7 @@ export function registerTargetCommands(ctx: Context, sparkService: SparkService)
       }
       await refreshTargets()
       return engine === 'character'
-        ? `已加入 Character 节日问候 target：${formatTarget(target)}`
+        ? `已加入 Character target：${formatTarget(target)}`
         : `已加入 Spark target：${formatTarget(target)}`
     })
 
@@ -243,8 +243,8 @@ export function registerTargetCommands(ctx: Context, sparkService: SparkService)
       if (!features) {
         return `功能只能是 ${SPARK_TARGET_FEATURES_TEXT}，多个功能用空格或逗号分隔；也可使用 all 或 none`
       }
-      if (current.engine === 'character' && features.some((feature) => feature !== 'festival')) {
-        return 'Character target 仅支持 festival；可设置 festival 或 none'
+      if (current.engine === 'character' && features.includes('scheduled')) {
+        return 'Character target 不支持 scheduled；可设置 festival、proactive 或 none'
       }
 
       const target = await sparkService.targets.setDatabaseTargetFeatures(databaseId, features)

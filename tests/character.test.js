@@ -2,20 +2,21 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 
 const {
-  CharacterFestivalAdapter,
+  CharacterAdapter,
   characterSessionKey,
   formatCharacterFestivalMarker,
   formatCharacterTime,
   parseCharacterFestivalMarker
-} = require('../lib/service/character_festival')
+} = require('../lib/service/character')
 const { createTarget, mockLogger } = require('./helpers')
 
-function createCharacterContext(initial = {}) {
+function createCharacterContext(initial = {}, options = {}) {
   const wakeUps = new Map(
     Object.entries(initial).map(([key, items]) => [key, items.map((item) => ({ ...item }))])
   )
   const lastSessions = new Map()
   const persisted = []
+  const proactiveRuns = []
   let nextUid = 1
 
   const bot = {
@@ -87,16 +88,31 @@ function createCharacterContext(initial = {}) {
     }
   }
 
+  const character = {
+    isMute() {
+      return options.muted === true
+    },
+    isResponseLocked() {
+      return options.locked === true
+    },
+    async triggerCollect(session, reason) {
+      proactiveRuns.push({ session, reason })
+      return options.triggered !== false
+    }
+  }
+
   return {
     ctx: {
       bots: [bot],
+      chatluna_character: character,
       chatluna_character_trigger: trigger,
       logger: () => mockLogger()
     },
     trigger,
     wakeUps,
     lastSessions,
-    persisted
+    persisted,
+    proactiveRuns
   }
 }
 
@@ -129,10 +145,7 @@ test('Character festival bridge validates the native trigger API', () => {
   const { ctx } = createCharacterContext()
   delete ctx.chatluna_character_trigger.setWakeUpReplies
 
-  assert.throws(
-    () => new CharacterFestivalAdapter(ctx).start(),
-    /missing trigger methods: setWakeUpReplies/
-  )
+  assert.throws(() => new CharacterAdapter(ctx).start(), /missing methods: setWakeUpReplies/)
 })
 
 test('Character festival bridge persists one marked wake-up and updates it idempotently', async () => {
@@ -140,7 +153,7 @@ test('Character festival bridge persists one marked wake-up and updates it idemp
   const { ctx, wakeUps, persisted } = createCharacterContext({
     'group:guild-a': [userTask]
   })
-  const adapter = new CharacterFestivalAdapter(ctx)
+  const adapter = new CharacterAdapter(ctx)
   adapter.start()
   const target = createTarget({
     numericId: 12,
@@ -198,7 +211,7 @@ test('Character festival cleanup removes only stale Spark markers', async () => 
     'group:guild-a': [userTask, sparkWakeUp(12, '2026-08-19'), sparkWakeUp(99, '2026-09-10')],
     'group:guild-b': [sparkWakeUp(12, '2026-08-19', 'wrong-route'), sparkWakeUp(88, '2026-10-01')]
   })
-  const adapter = new CharacterFestivalAdapter(ctx)
+  const adapter = new CharacterAdapter(ctx)
   const active = createTarget({
     numericId: 12,
     engine: 'character',
@@ -217,7 +230,7 @@ test('Character festival cleanup removes only stale Spark markers', async () => 
 
 test('Character festival bridge maps direct targets to private Character sessions', async () => {
   const { ctx, lastSessions } = createCharacterContext()
-  const adapter = new CharacterFestivalAdapter(ctx)
+  const adapter = new CharacterAdapter(ctx)
   const target = createTarget({ numericId: 3, engine: 'character' })
 
   await adapter.syncTarget(target, {
@@ -231,7 +244,7 @@ test('Character festival bridge maps direct targets to private Character session
 
 test('Character festival bridge creates an active session without passive reply metadata', async () => {
   const { ctx, lastSessions } = createCharacterContext()
-  const adapter = new CharacterFestivalAdapter(ctx)
+  const adapter = new CharacterAdapter(ctx)
   const target = createTarget({
     numericId: 7,
     engine: 'character',
@@ -249,4 +262,36 @@ test('Character festival bridge creates an active session without passive reply 
   const session = lastSessions.get('group:guild-a')
   assert.equal(session.content, '')
   assert.equal(session.messageId, undefined)
+})
+
+test('Character proactive chat reuses the native collector without fabricating a user message', async () => {
+  const { ctx, lastSessions, proactiveRuns } = createCharacterContext()
+  const adapter = new CharacterAdapter(ctx)
+  adapter.start()
+  const target = createTarget({
+    numericId: 8,
+    engine: 'character',
+    type: 'group',
+    guildId: 'guild-a',
+    channelId: 'guild-a',
+    features: ['proactive']
+  })
+
+  assert.equal(await adapter.triggerProactive(target, '主动关心用户'), true)
+  assert.equal(proactiveRuns.length, 1)
+  assert.equal(proactiveRuns[0].reason, 'Spark 主动聊天：主动关心用户')
+  assert.equal(proactiveRuns[0].session.messageId, undefined)
+  assert.equal(lastSessions.get('group:guild-a'), proactiveRuns[0].session)
+
+  const busy = createCharacterContext({}, { muted: true })
+  const busyAdapter = new CharacterAdapter(busy.ctx)
+  busyAdapter.start()
+  assert.equal(await busyAdapter.triggerProactive(target, '不应触发'), false)
+  assert.equal(busy.proactiveRuns.length, 0)
+
+  const locked = createCharacterContext({}, { locked: true })
+  const lockedAdapter = new CharacterAdapter(locked.ctx)
+  lockedAdapter.start()
+  assert.equal(await lockedAdapter.triggerProactive(target, '不应重复触发'), false)
+  assert.equal(locked.proactiveRuns.length, 0)
 })

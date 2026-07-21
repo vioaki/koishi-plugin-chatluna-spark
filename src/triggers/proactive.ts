@@ -68,7 +68,7 @@ export class ProactiveTrigger {
 
   async refreshTargets() {
     const targets = (await this.sparkService.targets.listRuntimeTargets('proactive')).filter(
-      (target) => target.engine === 'chatluna'
+      (target) => target.engine === 'chatluna' || this.sparkService.character != null
     )
     const active = new Set(targets.map((target) => target.key))
     const now = Date.now()
@@ -98,11 +98,13 @@ export class ProactiveTrigger {
     const now = Date.now()
 
     for (const key of keys) {
-      const state = this._roomStates.get(key)
-      if (!state) continue
+      for (const targetKey of [key, `character:${key}`]) {
+        const state = this._roomStates.get(targetKey)
+        if (!state) continue
 
-      state.lastChatTime = now
-      state.currentProbability = 0
+        state.lastChatTime = now
+        state.currentProbability = 0
+      }
     }
   }
 
@@ -140,6 +142,18 @@ export class ProactiveTrigger {
       const prompt = prompts[Math.floor(Math.random() * prompts.length)]
 
       try {
+        if (state.target.engine === 'character') {
+          const triggered = await this.sparkService.character?.triggerProactive(
+            state.target,
+            prompt
+          )
+          if (triggered) {
+            state.lastChatTime = now
+            state.currentProbability = 0
+          }
+          continue
+        }
+
         const result = await this.sparkService.trigger.wakeup(state.target.routing, prompt)
         if (result.ok) {
           state.lastChatTime = now

@@ -1,6 +1,6 @@
 import { Context, Service } from 'koishi'
 import { Config } from '../config'
-import type { CharacterFestivalAdapter } from './character_festival'
+import type { CharacterAdapter } from './character'
 import { SparkTargetRegistry } from './targets'
 import { SparkTriggerAdapter } from './trigger_adapter'
 
@@ -12,7 +12,7 @@ declare module 'koishi' {
 
 export class SparkService extends Service {
   public trigger: SparkTriggerAdapter
-  public characterFestival?: CharacterFestivalAdapter
+  public character?: CharacterAdapter
   public targets: SparkTargetRegistry
 
   constructor(

@@ -455,7 +455,6 @@ export class SparkTriggerAdapter {
       userId: task.target.principalId,
       authority: PLUGIN_ACTOR.authority
     }
-    if (task.enabled) await trigger.setEnabled(PLUGIN_ACTOR, task.id, false)
 
     let replacement: TriggerTask | undefined
     try {
@@ -471,7 +470,6 @@ export class SparkTriggerAdapter {
           )
         }
       }
-      await this.restoreLegacyTask(task)
       throw err
     }
     if (!replacement) throw new Error(`Failed to create replacement for Spark trigger [${task.id}]`)
@@ -487,7 +485,6 @@ export class SparkTriggerAdapter {
           `Failed to roll back replacement Spark trigger [${replacement.id}]: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
         )
       }
-      await this.restoreLegacyTask(task)
       throw err
     }
 
@@ -514,17 +511,6 @@ export class SparkTriggerAdapter {
       }
     }
     return { type: 'once', at: config.at }
-  }
-
-  private async restoreLegacyTask(task: TriggerTask) {
-    if (!task.enabled) return
-    try {
-      await this.ctx.chatluna_agent.trigger.setEnabled(PLUGIN_ACTOR, task.id, true)
-    } catch (err) {
-      this._logger.warn(
-        `Failed to restore legacy Spark trigger [${task.id}]: ${err instanceof Error ? err.message : String(err)}`
-      )
-    }
   }
 
   private async restoreMetadata(taskId: number, metadata: SparkTaskMetadata | null) {
